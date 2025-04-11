@@ -53,9 +53,9 @@ const ChatInterface: React.FC = () => {
     };
 
     return (
-        <div className="flex flex-col h-screen bg-gray-50">
+        <div className="flex flex-col w-full max-w-4xl my-8 bg-gray-50 dark:bg-gray-900">
             {/* Message display area */}
-            <div className="flex-grow overflow-y-auto p-4 space-y-4">
+            <div className="flex flex-col items-center flex-grow overflow-y-auto p-4 space-y-4"> {/* Added flex flex-col items-center */}
                 {messages.map((msg, index) => (
                     <Message key={index} sender={msg.sender} text={msg.text} />
                 ))}
