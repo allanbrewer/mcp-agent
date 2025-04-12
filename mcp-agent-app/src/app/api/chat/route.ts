@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
-import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold, Content } from '@google/generative-ai';
-import { spawn } from 'child_process';
-import { randomUUID } from 'crypto';
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold, Content, Part, SchemaType, Tool } from '@google/generative-ai';
+
 
 // Define the structure for a message
 interface Message {
@@ -64,17 +63,34 @@ const mapMessagesToGemini = (messages: Message[]): Content[] => {
     return mappedHistory;
 };
 
+// Define the tool(s) for Gemini Function Calling, explicitly typed
+const tools: Tool[] = [{
+    functionDeclarations: [
+        {
+            name: "get_github_issue",
+            description: "Gets the details of a specific issue from a GitHub repository.",
+            parameters: { // This object itself should conform to Schema (specifically ObjectSchema)
+                type: SchemaType.OBJECT,
+                properties: {
+                    // Each property here must also conform to Schema
+                    owner: { type: SchemaType.STRING, description: "The owner or organization of the repository." },
+                    repo: { type: SchemaType.STRING, description: "The name of the repository." },
+                    issue_number: { type: SchemaType.NUMBER, description: "The number of the issue to retrieve." },
+                },
+                required: ["owner", "repo", "issue_number"],
+            },
+        },
+        // Add other tool definitions here later if needed
+    ]
+}];
+
+// Define the URL for the Python GitHub MCP server
+const GITHUB_MCP_SERVER_URL = process.env.GITHUB_MCP_SERVER_URL || 'http://localhost:8001';
+
 
 export async function POST(request: Request) {
-    // Check for GitHub PAT
-    const githubToken = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
-    if (!githubToken) {
-        console.error('Missing GitHub PAT configuration');
-        return NextResponse.json({ error: 'Missing GitHub PAT configuration' }, { status: 500 });
-    }
-
     try {
-        const body: RequestBody = await request.json();
+        const body: RequestBody = await request.json(); // Corrected: Use parameter 'request'
         const { messages } = body;
 
         if (!messages || messages.length === 0) {
@@ -91,133 +107,119 @@ export async function POST(request: Request) {
         // Map the history for the chat session
         const history = mapMessagesToGemini(messages);
 
+        // Start chat with tools enabled
         const chat = model.startChat({
             generationConfig,
             safetySettings,
             history: history,
+            tools: tools, // Pass tools here
         });
 
+        // Send message without tools option here
         const result = await chat.sendMessage(prompt);
         const response = result.response;
 
-        if (!response || !response.text) {
-            console.error('Gemini API response missing text:', response);
-            return NextResponse.json({ error: 'Failed to get valid response from LLM' }, { status: 500 });
+        // --- NEW LOGGING ---
+        console.log("DEBUG: Full Gemini Response Object:", JSON.stringify(response, null, 2));
+        // --- END NEW LOGGING ---
+
+        if (!response) { // Check for response object itself first
+            console.error('Gemini API response object is missing');
+            return NextResponse.json({ error: 'Failed to get response object from LLM' }, { status: 500 });
         }
 
-        const replyText = response.text();
+        // Check for function calls in the response
+        const functionCalls = response.functionCalls(); // Use the function to get the array
 
-        // Check for GitHub action pattern
-        const githubActionRegex = /\[\[ACTION:GITHUB_GET_ISSUE owner=(.*?) repo=(.*?) issue_number=(\d+)\]\]/;
-        const match = replyText.match(githubActionRegex);
+        if (functionCalls && functionCalls.length > 0) {
+            console.log("DEBUG: Detected function call(s):", JSON.stringify(functionCalls, null, 2));
 
-        if (match) {
-            const [, owner, repo, issue_number] = match;
+            // --- Handle Function Call(s) ---
+            // For now, we only handle the first call and don't loop back to Gemini
+            const call = functionCalls[0]; // Process the first call
+            let toolResult: any;
+            let errorMessage: string | null = null;
 
-            try {
-                const mcpResult = await new Promise<Message>((resolve, reject) => {
-                    const dockerArgs = ['run', '-i', '--rm', '-e', 'GITHUB_PERSONAL_ACCESS_TOKEN', 'ghcr.io/github/github-mcp-server'];
-                    const dockerProcess = spawn('docker', dockerArgs, {
-                        env: { ...process.env, GITHUB_PERSONAL_ACCESS_TOKEN: githubToken }
+            if (call.name === 'get_github_issue') {
+                console.log(`DEBUG: Executing tool '${call.name}' with args:`, JSON.stringify(call.args));
+                try {
+                    const mcpResponse = await fetch(`${GITHUB_MCP_SERVER_URL}/get_issue`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(call.args), // Pass Gemini's args directly
                     });
 
-                    // Early error handling for spawn issues
-                    dockerProcess.on('error', (err) => {
-                        console.error(`Docker spawn error: ${err.message}`);
-                        reject(new Error(`Docker spawn error: ${err.message}`));
-                    });
-
-                    // Log stderr for debugging
-                    dockerProcess.stderr.on('data', (data) => {
-                        console.error(`MCP Server stderr: ${data}`);
-                    });
-
-                    const mcpRequest = {
-                        jsonrpc: "2.0",
-                        method: "get_issue",
-                        params: { owner: owner, repo: repo, issue_number: parseInt(issue_number) },
-                        id: randomUUID()
-                    };
-
-                    let responseData = '';
-                    dockerProcess.stdout.on('data', (chunk) => {
-                        responseData += chunk.toString();
-                    });
-
-                    dockerProcess.on('close', (code) => {
-                        console.log(`MCP Server process exited with code ${code}`);
-                        if (code !== 0) {
-                            return reject(new Error(`MCP Server process exited with code ${code}`));
-                        }
-
-                        try {
-                            // Attempt to parse potentially multiple JSON objects (handle streaming if necessary)
-                            // For now, assume a single JSON response object per line or concatenated
-                            const lines = responseData.trim().split('\n');
-                            const lastLine = lines[lines.length - 1]; // Get the last potentially complete JSON
-                            if (!lastLine) {
-                                throw new Error('Empty response from MCP server');
-                            }
-                            const parsedResponse = JSON.parse(lastLine);
-
-                            if (parsedResponse.error) {
-                                console.error('MCP Server Error:', parsedResponse.error);
-                                return reject(new Error(`MCP Server Error: ${parsedResponse.error.message || 'Unknown error'}`));
-                            }
-
-                            if (parsedResponse.result) {
-                                const successMessage: Message = {
-                                    sender: 'llm',
-                                    text: `GitHub Action Result: ${JSON.stringify(parsedResponse.result, null, 2)}` // Pretty print result
-                                };
-                                resolve(successMessage);
-                            } else {
-                                // Handle cases where there's no error but also no result (unexpected)
-                                return reject(new Error('Invalid MCP server response structure'));
-                            }
-                        } catch (parseError) {
-                            console.error('Failed to parse MCP server response:', parseError);
-                            console.error('Raw MCP Response Data:', responseData); // Log raw data on parse failure
-                            return reject(new Error(`Failed to parse MCP server response: ${parseError instanceof Error ? parseError.message : parseError}`));
-                        }
-                    });
-
-                    // Send the request
-                    try {
-                        dockerProcess.stdin.write(JSON.stringify(mcpRequest) + '\n');
-                        dockerProcess.stdin.end();
-                    } catch (stdinError) {
-                        console.error(`Error writing to Docker stdin: ${stdinError}`);
-                        reject(new Error(`Error writing to Docker stdin: ${stdinError instanceof Error ? stdinError.message : stdinError}`));
-                        // Ensure process is killed if stdin write fails
-                        dockerProcess.kill();
+                    if (mcpResponse.ok) {
+                        toolResult = await mcpResponse.json();
+                        console.log("DEBUG: MCP Server Response (Success):", toolResult);
+                    } else {
+                        const errorBody = await mcpResponse.text();
+                        console.error(`DEBUG: MCP Server Request Failed (${mcpResponse.status}): ${errorBody}`);
+                        errorMessage = `Error calling GitHub tool: ${mcpResponse.statusText} - ${errorBody}`;
+                        toolResult = { error: errorMessage }; // Structure error for consistent handling
                     }
-                });
-
-                // Return the successful result from the MCP interaction
-                return NextResponse.json({ reply: mcpResult }, { status: 200 });
-
-            } catch (actionError) {
-                // Handle errors from the Promise (spawn, stderr, close, parse, MCP error)
-                console.error('Error executing GitHub action:', actionError);
-                const errorMessage: Message = {
-                    sender: 'llm',
-                    text: `Error executing GitHub action: ${actionError instanceof Error ? actionError.message : 'Unknown error'}`
-                };
-                return NextResponse.json({ reply: errorMessage }, { status: 500 }); // Use 500 for internal errors
+                } catch (fetchError: any) {
+                    console.error('DEBUG: Fetch error calling MCP Server:', fetchError);
+                    errorMessage = `Failed to connect to GitHub tool: ${fetchError.message}`;
+                    toolResult = { error: errorMessage };
+                }
+            } else {
+                console.warn(`DEBUG: Received unhandled function call: ${call.name}`);
+                errorMessage = `Tool '${call.name}' is not supported.`;
+                toolResult = { error: errorMessage };
             }
 
-        } else {
-            // No action detected, return original Gemini response
+            // --- Return Tool Result Directly to Frontend ---
+            // As per instructions, format the result/error and send it back immediately.
+            const replyMessage: Message = {
+                sender: 'llm',
+                text: errorMessage
+                    ? `Tool Execution Error (${call.name}):\n${errorMessage}`
+                    : `Tool Result (${call.name}):\n\`\`\`json\n${JSON.stringify(toolResult, null, 2)}\n\`\`\``
+            };
+            return NextResponse.json({ reply: replyMessage });
+
+            /*
+            // --- FUTURE: Send result back to Gemini (Multi-turn) ---
+            // This part is NOT implemented in this step as per instructions.
+            const functionResponsePart: Part = {
+                functionResponse: {
+                    name: call.name,
+                    response: { content: toolResult }, // Send the result object back
+                },
+            };
+            // Send the function response back to the model
+            const secondResult = await chat.sendMessage([functionResponsePart]); // Send Part array
+            const finalResponse = secondResult.response;
+            const finalText = finalResponse?.text();
+    
+            if (!finalText) {
+                 console.error('Gemini did not return text after function call response');
+                 return NextResponse.json({ error: 'LLM failed to provide final response after tool execution' }, { status: 500 });
+            }
+    
+            const finalReply: Message = { sender: 'llm', text: finalText };
+            return NextResponse.json({ reply: finalReply });
+            // --- END FUTURE ---
+            */
+
+        } else if (response.text) {
+            // --- Handle Regular Text Response (No Function Call) ---
+            const replyText = response.text();
+            console.log("DEBUG: Gemini Raw Response Text (No function call detected):", replyText);
             const originalReply: Message = {
                 sender: 'llm',
                 text: replyText,
             };
             return NextResponse.json({ reply: originalReply }, { status: 200 });
+        } else {
+            // Handle cases where there's no function call and no text (should be rare but possible)
+            console.error('Gemini response missing text and function calls:', response);
+            return NextResponse.json({ error: 'LLM returned empty response' }, { status: 500 });
         }
 
-    } catch (error) {
-        console.error('Error processing chat request with Gemini:', error);
+    } catch (error) { // This is the catch for the main try block
+        console.error('Error processing chat request:', error);
         // Provide a more specific error message if possible
         const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
         return NextResponse.json({ error: `Failed to process chat request: ${errorMessage}` }, { status: 500 });
