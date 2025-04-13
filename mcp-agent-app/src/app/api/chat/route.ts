@@ -1,5 +1,5 @@
-import { spawn } from 'child_process'; // Added
-import { randomUUID } from 'crypto'; // Added
+import { spawn } from 'child_process';
+import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 // Use FunctionDeclarationSchemaType from the SDK import
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold, Content, Part, FunctionDeclarationSchema, SchemaType, Tool } from '@google/generative-ai'; // Corrected import
@@ -40,8 +40,8 @@ const safetySettings = [
 
 // Helper function to map app's message format to Gemini's format
 const mapMessagesToGemini = (messages: Message[]): Content[] => {
-    // Get all messages except the last one for history
-    const historyMessages = messages.slice(0, -1);
+    // Get all messages for history
+    const historyMessages = messages; // Use all messages for history context
 
     // Map to Gemini format
     let mappedHistory = historyMessages.map(msg => ({
@@ -53,14 +53,13 @@ const mapMessagesToGemini = (messages: Message[]): Content[] => {
     const firstUserIndex = mappedHistory.findIndex(msg => msg.role === 'user');
 
     // If no 'user' message is found or history is empty, return empty array
-    // Gemini API requires history to start with 'user' if not empty.
-    if (firstUserIndex === -1) {
+    if (firstUserIndex === -1 && mappedHistory.length > 0) {
+        console.warn("History contains only model messages. Returning empty history for startChat.");
         return [];
+    } else if (firstUserIndex > 0) {
+        // Slice the array starting from the first 'user' message if it wasn't the first message
+        mappedHistory = mappedHistory.slice(firstUserIndex);
     }
-
-    // Slice the array starting from the first 'user' message
-    // This ensures the history starts with 'user' role.
-    mappedHistory = mappedHistory.slice(firstUserIndex);
 
     return mappedHistory;
 };
@@ -69,7 +68,7 @@ const mapMessagesToGemini = (messages: Message[]): Content[] => {
 const tools: Tool[] = [{
     functionDeclarations: [
         {
-            name: "send_message",
+            name: "send_message", // Keep consistent naming if WhatsApp server expects this
             description: "Sends a message to a specified WhatsApp contact or group.",
             parameters: {
                 type: SchemaType.OBJECT, // Use SchemaType enum
@@ -80,6 +79,7 @@ const tools: Tool[] = [{
                 required: ["recipient", "message"],
             },
         },
+        // Add other tools here later
     ]
 }];
 
@@ -89,10 +89,26 @@ const tools: Tool[] = [{
  */
 async function callMcpToolViaSpawn(toolName: string, toolArgs: any): Promise<any> {
     console.log(`Attempting MCP tool call via spawn: ${toolName}`);
-    const uvPath = process.env.UV_PATH || 'uv';
-    const scriptDir = '/Users/abrewer/projects/mcp-agent/whatsapp-mcp/whatsapp-mcp-server'; // TODO: Make configurable?
-    const command = uvPath;
-    const args = ['run', '--directory', scriptDir, 'main.py'];
+    // Determine command based on tool name - Basic example
+    let command: string;
+    let args: string[];
+    let scriptDir: string;
+
+    if (toolName === 'send_message') { // Assuming this is the WhatsApp tool
+        const uvPath = process.env.UV_PATH || 'uv';
+        scriptDir = '/Users/abrewer/projects/mcp-agent/whatsapp-mcp/whatsapp-mcp-server'; // TODO: Make configurable
+        command = uvPath;
+        args = ['run', '--directory', scriptDir, 'main.py'];
+    }
+    // else if (toolName === 'get_github_issue') {
+    //     // TODO: Add command/args for GitHub Docker server
+    //     command = 'docker';
+    //     args = ['run', '-i', '--rm', '-e', `GITHUB_PERSONAL_ACCESS_TOKEN=${process.env.GITHUB_PERSONAL_ACCESS_TOKEN}`, 'ghcr.io/github/github-mcp-server'];
+    // }
+    else {
+        throw new Error(`Unsupported tool name for spawn execution: ${toolName}`);
+    }
+
 
     return new Promise((resolve, reject) => {
         const mcpProcess = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -119,16 +135,15 @@ async function callMcpToolViaSpawn(toolName: string, toolArgs: any): Promise<any
         const cleanup = () => {
             clearTimeout(operationTimeout);
             // Ensure listeners are removed to prevent memory leaks
-            mcpProcess.stdout.removeAllListeners();
-            mcpProcess.stderr.removeAllListeners();
-            mcpProcess.removeAllListeners();
+            if (mcpProcess && mcpProcess.stdout) mcpProcess.stdout.removeAllListeners();
+            if (mcpProcess && mcpProcess.stderr) mcpProcess.stderr.removeAllListeners();
+            if (mcpProcess) mcpProcess.removeAllListeners();
         };
 
         const processLine = (line: string) => {
             if (!line || toolCallResponseReceived) return; // Ignore empty lines or if already done
             try {
                 const parsedResponse = JSON.parse(line);
-                // console.log("Parsed MCP Response:", JSON.stringify(parsedResponse, null, 2)); // Keep this commented unless deep debugging
 
                 // Check if it's the initialize response
                 if (!initializeResponseReceived && parsedResponse.id === initializeRequestId && parsedResponse.result?.capabilities) {
@@ -137,11 +152,7 @@ async function callMcpToolViaSpawn(toolName: string, toolArgs: any): Promise<any
                     isInitialized = true;
 
                     // --- Send Initialized Notification ---
-                    const initializedNotification = {
-                        jsonrpc: "2.0",
-                        method: "notifications/initialized",
-                        params: {}
-                    };
+                    const initializedNotification = { jsonrpc: "2.0", method: "notifications/initialized", params: {} };
                     const initializedString = JSON.stringify(initializedNotification) + '\n';
                     console.log("Sending MCP Initialized Notification.");
                     if (!mcpProcess.stdin.writableEnded) {
@@ -149,8 +160,7 @@ async function callMcpToolViaSpawn(toolName: string, toolArgs: any): Promise<any
                     } else {
                         console.error("MCP stdin closed before sending initialized notification.");
                         if (!toolCallResponseReceived) reject(new Error("MCP stdin closed prematurely (initialized notification)."));
-                        cleanup();
-                        return;
+                        cleanup(); return;
                     }
 
                     // --- Introduce Delay before sending Tool Call Request ---
@@ -159,14 +169,18 @@ async function callMcpToolViaSpawn(toolName: string, toolArgs: any): Promise<any
                         if (!isInitialized || !mcpProcess || mcpProcess.killed || mcpProcess.stdin.writableEnded) {
                             console.error("MCP state invalid or process closed before sending tool call.");
                             if (!toolCallResponseReceived) reject(new Error("MCP state invalid or process closed before tool call."));
-                            cleanup();
-                            return;
+                            cleanup(); return;
                         }
                         toolCallRequestId = randomUUID();
+                        // Adjust method based on MCP server expectation (e.g., 'tools/call' or the tool name directly)
+                        // The lharries/whatsapp-mcp server seems to expect the tool name directly as the method
                         const toolCallRequest = {
                             jsonrpc: "2.0",
-                            method: "tools/call",
-                            params: { name: toolName, arguments: toolArgs }, // Use function parameters
+                            method: "tools/call", // Standard MCP method for tool calls
+                            params: {          // Parameters nested under 'params'
+                                name: toolName,      // Tool name
+                                arguments: toolArgs  // Tool arguments
+                            },
                             id: toolCallRequestId
                         };
                         const toolCallString = JSON.stringify(toolCallRequest) + '\n';
@@ -185,23 +199,21 @@ async function callMcpToolViaSpawn(toolName: string, toolArgs: any): Promise<any
                         reject(new Error(`MCP Tool Call Error: ${parsedResponse.error.message || JSON.stringify(parsedResponse.error)}`));
                     } else {
                         console.log("MCP Tool Call successful.");
-                        resolve(parsedResponse.result); // Resolve the main promise
+                        // Resolve with the *entire* result object from the MCP server
+                        resolve(parsedResponse.result ?? { status: "ok", message: "Action completed successfully." });
                     }
-                    cleanup(); // Clean up timeout and listeners once resolved/rejected
+                    cleanup();
 
                 } else {
-                    // Ignore other messages for now (like potential notifications) unless debugging
-                    // console.warn("Received unexpected or already processed MCP message:", line);
+                    // Ignore other messages
                 }
             } catch (parseError: any) {
                 console.error(`Failed to parse MCP JSON: ${line}. Error: ${parseError.message}`);
-                // Don't reject immediately on parse error, might be non-JSON output before the actual response
             }
         };
 
         mcpProcess.stdout.on('data', (data) => {
             stdoutBuffer += data.toString();
-            // console.log(`MCP Server stdout chunk: ${data}`); // Keep commented unless debugging chunks
             let newlineIndex;
             while ((newlineIndex = stdoutBuffer.indexOf('\n')) >= 0) {
                 const line = stdoutBuffer.substring(0, newlineIndex).trim();
@@ -210,45 +222,20 @@ async function callMcpToolViaSpawn(toolName: string, toolArgs: any): Promise<any
             }
         });
 
-        mcpProcess.stderr.on('data', (data) => {
-            errorData += data.toString();
-            console.error(`MCP Server stderr: ${data}`); // Always log stderr
-        });
-
-        mcpProcess.on('error', (err) => {
-            console.error(`MCP Spawn error: ${err.message}`);
-            if (!toolCallResponseReceived) reject(new Error(`Spawn error: ${err.message}`));
-            cleanup();
-        });
-
+        mcpProcess.stderr.on('data', (data) => { errorData += data.toString(); console.error(`MCP Server stderr: ${data}`); });
+        mcpProcess.on('error', (err) => { console.error(`MCP Spawn error: ${err.message}`); if (!toolCallResponseReceived) reject(new Error(`Spawn error: ${err.message}`)); cleanup(); });
         mcpProcess.on('close', (code) => {
             console.log(`MCP process exited with code ${code}`);
-            if (!toolCallResponseReceived) { // If we haven't successfully gotten a response
-                // Process remaining buffer data
-                if (stdoutBuffer.trim()) {
-                    console.log("Processing remaining stdout buffer on close...");
-                    stdoutBuffer.split('\n').forEach(processLine);
-                }
-                // If still no response after processing buffer, reject
-                if (!toolCallResponseReceived) {
-                    reject(new Error(`MCP process exited with code ${code} before completing tool call. Stderr: ${errorData || 'None'}`));
-                }
+            if (!toolCallResponseReceived) {
+                if (stdoutBuffer.trim()) { console.log("Processing remaining stdout buffer on close..."); stdoutBuffer.split('\n').forEach(processLine); }
+                if (!toolCallResponseReceived) { reject(new Error(`MCP process exited with code ${code} before completing tool call. Stderr: ${errorData || 'None'}`)); }
             }
-            cleanup(); // Final cleanup
+            cleanup();
         });
 
         // --- Send Initialize Request ---
         initializeRequestId = randomUUID();
-        const initializeRequest = {
-            jsonrpc: "2.0",
-            method: "initialize",
-            params: {
-                protocolVersion: "1.0",
-                clientInfo: { name: "mcp-agent-nextjs-client", version: "0.1.0" },
-                capabilities: {}
-            },
-            id: initializeRequestId
-        };
+        const initializeRequest = { jsonrpc: "2.0", method: "initialize", params: { protocolVersion: "1.0", clientInfo: { name: "mcp-agent-nextjs-client", version: "0.1.0" }, capabilities: {} }, id: initializeRequestId };
         const initializeRequestString = JSON.stringify(initializeRequest) + '\n';
         console.log("Sending MCP Initialize Request.");
         mcpProcess.stdin.write(initializeRequestString);
@@ -257,96 +244,113 @@ async function callMcpToolViaSpawn(toolName: string, toolArgs: any): Promise<any
 
 export async function POST(request: Request) {
     try {
-        const body: RequestBody = await request.json(); // Corrected: Use parameter 'request'
+        const body: RequestBody = await request.json();
         const { messages } = body;
 
         if (!messages || messages.length === 0) {
             return NextResponse.json({ error: 'No messages provided' }, { status: 400 });
         }
 
-        // Extract the latest user message
-        const latestUserMessage = messages[messages.length - 1];
-        if (latestUserMessage.sender !== 'user') {
-            return NextResponse.json({ error: 'Last message must be from user' }, { status: 400 });
-        }
-        const prompt = latestUserMessage.text;
-
-        // Map the history for the chat session
+        // Map the *entire* message history for Gemini's context
         const history = mapMessagesToGemini(messages);
 
-        // Start chat with tools enabled
+        // Start chat session - history is managed internally by the chat object
         const chat = model.startChat({
             generationConfig,
             safetySettings,
-            history: history,
-            tools: tools, // Pass tools here
+            history: history.slice(0, -1), // Pass history *excluding* the latest user message
+            tools: tools,
         });
 
-        // Send message without tools option here
-        const result = await chat.sendMessage(prompt);
-        const response = result.response;
+        // --- Start Conversation Loop ---
+        let currentPrompt: string | Part[] = [{ text: messages[messages.length - 1].text }]; // Start with the latest user message text
+        let safetyAlert = false;
+        let finalApiResponse: NextResponse | null = null; // To store the final response
 
-        // --- NEW LOGGING ---
-        console.log("DEBUG: Full Gemini Response Object:", JSON.stringify(response, null, 2));
-        // --- END NEW LOGGING ---
+        for (let i = 0; i < 5; i++) { // Limit loops
+            console.log(`--- Loop ${i + 1}: Sending to Gemini ---`);
+            const result = await chat.sendMessage(currentPrompt);
+            const response = result.response;
 
-        if (!response) { // Check for response object itself first
-            console.error('Gemini API response object is missing');
-            return NextResponse.json({ error: 'Failed to get response object from LLM' }, { status: 500 });
-        }
+            console.log(`DEBUG: Gemini Response (Loop ${i + 1}):`, JSON.stringify(response, null, 2));
 
-        // Check for function calls in the response
-        const functionCalls = response.functionCalls(); // Use the function to get the array
-
-        if (functionCalls && functionCalls.length > 0) {
-            console.log("DEBUG: Detected function call(s):", JSON.stringify(functionCalls, null, 2));
-
-            // --- Handle Function Call(s) ---
-            // For now, we only handle the first call and don't loop back to Gemini
-            const functionCall = functionCalls[0]; // Use consistent naming
-
-            if (functionCall.name === 'send_message') { // Corrected tool name check
-                // --- Call MCP Tool via Spawn ---
-                try {
-                    const toolResult = await callMcpToolViaSpawn(functionCall.name, functionCall.args);
-                    const replyMessage: Message = {
-                        sender: 'llm', // Or 'tool'
-                        text: `✅ WhatsApp message sent successfully. Result:\n\`\`\`json\n${JSON.stringify(toolResult ?? { status: "ok" }, null, 2)}\n\`\`\`` // Provide default if result is null/undefined
-                    };
-                    console.log("Sending success reply to client:", replyMessage);
-                    return NextResponse.json({ reply: replyMessage });
-                } catch (error: any) {
-                    console.error("Error executing tool via spawn:", error);
-                    const errorMessage: Message = { sender: 'llm', text: `⚠️ Error executing WhatsApp action: ${error.message}` };
-                    // Consider returning 500 for internal server errors
-                    return NextResponse.json({ reply: errorMessage }, { status: 500 });
-                }
-
-            } else {
-                // Handle unknown tool call
-                console.warn(`Unknown tool called: ${functionCall.name}`);
-                const errorMessage: Message = { sender: 'llm', text: `Unknown tool requested: ${functionCall.name}` };
-                return NextResponse.json({ reply: errorMessage });
+            if (!response) {
+                console.error('Gemini API response object is missing');
+                finalApiResponse = NextResponse.json({ error: 'Failed to get response object from LLM' }, { status: 500 });
+                break; // Exit loop
             }
 
-        } else if (response.text) {
-            // --- Handle Regular Text Response (No Function Call) ---
-            const replyText = response.text();
-            console.log("DEBUG: Gemini Raw Response Text (No function call detected):", replyText);
-            const originalReply: Message = {
-                sender: 'llm',
-                text: replyText,
-            };
-            return NextResponse.json({ reply: originalReply }, { status: 200 });
-        } else {
-            // Handle cases where there's no function call and no text (should be rare but possible)
-            console.error('Gemini response missing text and function calls:', response);
-            return NextResponse.json({ error: 'LLM returned empty response' }, { status: 500 });
+            // Check safety ratings
+            if (response.promptFeedback?.blockReason || response.candidates?.[0]?.finishReason === 'SAFETY') {
+                console.warn("Gemini response blocked due to safety settings.");
+                safetyAlert = true;
+                break; // Exit loop
+            }
+
+            const functionCalls = response.functionCalls();
+
+            if (functionCalls && functionCalls.length > 0) {
+                console.log("DEBUG: Detected function call(s):", JSON.stringify(functionCalls, null, 2));
+                const functionCall = functionCalls[0]; // Handle first call
+                const toolName = functionCall.name;
+                const toolArgs = functionCall.args;
+                let toolExecutionResult: any; // Renamed from toolResult to avoid conflict
+
+                try {
+                    // --- Call MCP Tool via Spawn ---
+                    toolExecutionResult = await callMcpToolViaSpawn(toolName, toolArgs); // Use renamed variable
+                    console.log(`DEBUG: Tool '${toolName}' executed successfully. Result:`, toolExecutionResult);
+                    // --- Prepare Function Response Part for next Gemini call ---
+                    currentPrompt = [{
+                        functionResponse: {
+                            name: toolName,
+                            response: { content: toolExecutionResult }, // Pass result back
+                        },
+                    }];
+                    // Continue the loop
+
+                } catch (error: any) {
+                    console.error(`Error executing tool '${toolName}' via spawn:`, error);
+                    // Send error back to Gemini
+                    currentPrompt = [{
+                        functionResponse: {
+                            name: toolName,
+                            response: { content: { error: `Failed to execute tool: ${error.message}` } },
+                        },
+                    }];
+                    // Continue loop, let Gemini handle the error message
+                }
+            } else if (response.text) {
+                // --- Regular Text Response (End of Loop) ---
+                const replyText = response.text();
+                console.log("DEBUG: Final Gemini Text Response:", replyText);
+                const finalReply: Message = { sender: 'llm', text: replyText };
+                finalApiResponse = NextResponse.json({ reply: finalReply }, { status: 200 });
+                break; // Exit loop
+            } else {
+                // Handle unexpected empty response
+                console.error('Gemini response missing text and function calls:', response);
+                finalApiResponse = NextResponse.json({ error: 'LLM returned empty or unexpected response' }, { status: 500 });
+                break; // Exit loop
+            }
+        } // --- End Loop ---
+
+        // Return the final response determined in the loop
+        if (finalApiResponse) {
+            return finalApiResponse;
         }
 
-    } catch (error) { // This is the catch for the main try block
+        // Handle cases where loop finished without a definitive response
+        if (safetyAlert) {
+            return NextResponse.json({ reply: { sender: 'llm', text: "I cannot provide a response due to safety concerns." } }, { status: 200 });
+        } else {
+            // Max iterations reached
+            console.error("Maximum tool call loops reached without final text response.");
+            return NextResponse.json({ error: 'Agent reached maximum interaction depth' }, { status: 500 });
+        }
+
+    } catch (error) {
         console.error('Error processing chat request:', error);
-        // Provide a more specific error message if possible
         const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
         return NextResponse.json({ error: `Failed to process chat request: ${errorMessage}` }, { status: 500 });
     }
