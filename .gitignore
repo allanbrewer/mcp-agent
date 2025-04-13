@@ -1,8 +1,2 @@
-# Ignore the cloned GitHub MCP server source code directory
-github-mcp-server/
-
-# Ignore Python virtual environment for GitHub MCP server
-mcp-server-github/.venv/
-
-# Ignore environment file for GitHub MCP server
-mcp-server-github/.env
+# Ignore the cloned whatsapp MCP server source code directory
+whatsapp-mcp/
