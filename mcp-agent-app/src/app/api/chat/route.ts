@@ -32,36 +32,23 @@ const generationConfig = {
 };
 
 const safetySettings = [
-    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
-    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
-    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
-    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
 ];
 
-// Helper function to map app's message format to Gemini's format
-const mapMessagesToGemini = (messages: Message[]): Content[] => {
-    // Get all messages for history
-    const historyMessages = messages; // Use all messages for history context
+// System prompt definition
+const systemPrompt = `You are a helpful and informative assistant. You can answer questions, generate creative text formats, and provide information on a wide range of topics. You also have access to external tools that allow you to interact with other services, such as messaging apps, email, GitHub, etc. Use these tools when appropriate to fulfill the user's request, but answer general knowledge questions directly if no tool is needed.`;
 
-    // Map to Gemini format
-    let mappedHistory = historyMessages.map(msg => ({
+// Helper function to map app's message format to Gemini's format, ensuring 'user' follows system prompt if user messages exist.
+// Helper function to map app's message format to Gemini's Content format.
+// Does NOT add the system prompt here.
+const mapMessagesToGemini = (messages: Message[]): Content[] => {
+    return messages.map(msg => ({
         role: msg.sender === 'user' ? 'user' : 'model',
         parts: [{ text: msg.text }],
     }));
-
-    // Find the index of the first 'user' message
-    const firstUserIndex = mappedHistory.findIndex(msg => msg.role === 'user');
-
-    // If no 'user' message is found or history is empty, return empty array
-    if (firstUserIndex === -1 && mappedHistory.length > 0) {
-        console.warn("History contains only model messages. Returning empty history for startChat.");
-        return [];
-    } else if (firstUserIndex > 0) {
-        // Slice the array starting from the first 'user' message if it wasn't the first message
-        mappedHistory = mappedHistory.slice(firstUserIndex);
-    }
-
-    return mappedHistory;
 };
 
 // Define the tool(s) for Gemini Function Calling, explicitly typed
@@ -79,8 +66,35 @@ const tools: Tool[] = [{
                 required: ["recipient", "message"],
             },
         },
+        {
+            name: "list_chats",
+            description: "Lists the available WhatsApp chats, optionally filtering by name.",
+            parameters: {
+                type: SchemaType.OBJECT,
+                properties: {
+                    query: { type: SchemaType.STRING, description: "Optional text to filter chats by name." },
+                    limit: { type: SchemaType.NUMBER, description: "Optional maximum number of chats to return." }
+                },
+                required: [], // No required parameters based on description
+            },
+        },
+        {
+            name: "search_contacts",
+            description: "Searches for WhatsApp contacts by name or phone number.",
+            parameters: {
+                type: SchemaType.OBJECT,
+                properties: {
+                    query: { type: SchemaType.STRING, description: "The name or phone number fragment to search for." },
+                    limit: { type: SchemaType.NUMBER, description: "Optional maximum number of contacts to return." }
+                },
+                required: ["query"], // Query is likely required for a search
+            },
+        },
         // Add other tools here later
-    ]
+    ],
+    // },
+    // {
+    //     googleSearchRetrieval: {} // Enable Google Search tool
 }];
 
 /**
@@ -92,19 +106,24 @@ async function callMcpToolViaSpawn(toolName: string, toolArgs: any): Promise<any
     // Determine command based on tool name - Basic example
     let command: string;
     let args: string[];
-    let scriptDir: string;
+    // scriptDir will be determined within the tool-specific logic
 
-    if (toolName === 'send_message') { // Assuming this is the WhatsApp tool
-        const uvPath = process.env.UV_PATH || 'uv';
-        scriptDir = '/Users/abrewer/projects/mcp-agent/whatsapp-mcp/whatsapp-mcp-server'; // TODO: Make configurable
+    // Define WhatsApp-related tools that use the same script
+    const whatsappTools = ['send_message', 'list_chats', 'search_contacts'];
+
+    if (whatsappTools.includes(toolName)) { // Handle all WhatsApp tools via uv
+        const uvPath = process.env.UV_PATH || 'uv'; // Get UV path or default to 'uv'
+        const whatsappScriptDir = process.env.WHATSAPP_MCP_SCRIPT_DIR; // Get WhatsApp script dir
+
+        if (!whatsappScriptDir) {
+            console.error("WHATSAPP_MCP_SCRIPT_DIR environment variable is not set. This is required for the 'send_message' tool.");
+            throw new Error("Configuration Error: WHATSAPP_MCP_SCRIPT_DIR environment variable is not set.");
+        }
+
         command = uvPath;
-        args = ['run', '--directory', scriptDir, 'main.py'];
+        // Use the retrieved environment variable for the directory
+        args = ['run', '--directory', whatsappScriptDir, 'main.py'];
     }
-    // else if (toolName === 'get_github_issue') {
-    //     // TODO: Add command/args for GitHub Docker server
-    //     command = 'docker';
-    //     args = ['run', '-i', '--rm', '-e', `GITHUB_PERSONAL_ACCESS_TOKEN=${process.env.GITHUB_PERSONAL_ACCESS_TOKEN}`, 'ghcr.io/github/github-mcp-server'];
-    // }
     else {
         throw new Error(`Unsupported tool name for spawn execution: ${toolName}`);
     }
@@ -251,19 +270,48 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'No messages provided' }, { status: 400 });
         }
 
-        // Map the *entire* message history for Gemini's context
-        const history = mapMessagesToGemini(messages);
+        // 1. Map application messages to Gemini format
+        const mappedMessages = mapMessagesToGemini(messages);
 
-        // Start chat session - history is managed internally by the chat object
+        if (mappedMessages.length === 0) {
+            return NextResponse.json({ error: 'Cannot start chat with empty mapped messages' }, { status: 400 });
+        }
+
+        // 2. Separate the latest message (for sendMessage) from the preceding history (for startChat)
+        const latestMessage = mappedMessages[mappedMessages.length - 1];
+        let chatHistoryForStart = mappedMessages.slice(0, -1);
+
+        // 3. Prepare history for startChat: MUST start with 'user' or be empty.
+        //    Do NOT include the system prompt in this array.
+        if (chatHistoryForStart.length > 0 && chatHistoryForStart[0].role === 'model') {
+            // If history starts with 'model', find the first 'user' message.
+            const firstUserIndex = chatHistoryForStart.findIndex(msg => msg.role === 'user');
+            if (firstUserIndex !== -1) {
+                // Slice history to start from the first 'user' message.
+                chatHistoryForStart = chatHistoryForStart.slice(firstUserIndex);
+            } else {
+                // If no 'user' messages found (only 'model' messages in history),
+                // the history for startChat must be empty.
+                chatHistoryForStart = [];
+            }
+        }
+        // Now, chatHistoryForStart is guaranteed to be empty or start with 'user'.
+
+        // 4. Define the system instruction separately using the 'model' role as required by Content type
+        const systemInstruction: Content = { role: 'model', parts: [{ text: systemPrompt }] };
+
+        // 5. Start chat session using the dedicated systemInstruction parameter
         const chat = model.startChat({
             generationConfig,
             safetySettings,
-            history: history.slice(0, -1), // Pass history *excluding* the latest user message
+            history: chatHistoryForStart, // History strictly starts with 'user' or is empty
             tools: tools,
+            systemInstruction: systemInstruction, // Pass system prompt here
         });
 
         // --- Start Conversation Loop ---
-        let currentPrompt: string | Part[] = [{ text: messages[messages.length - 1].text }]; // Start with the latest user message text
+        // The first prompt sent to Gemini is the content of the latest message.
+        let currentPrompt: string | Part[] = latestMessage.parts;
         let safetyAlert = false;
         let finalApiResponse: NextResponse | null = null; // To store the final response
 
