@@ -1,8 +1,8 @@
 import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
-// Use FunctionDeclarationSchemaType from the SDK import
-import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold, Content, Part, FunctionDeclarationSchema, SchemaType, Tool } from '@google/generative-ai'; // Corrected import
+// Use types from the new SDK import
+import { GoogleGenAI, HarmCategory, HarmBlockThreshold, Content, Part, FunctionDeclaration, Tool, FunctionCallingConfigMode, Type } from '@google/genai'; // Revert back to GoogleGenAI class name
 
 // Define the structure for a message
 interface Message {
@@ -15,15 +15,17 @@ interface RequestBody {
     messages: Message[];
 }
 
+// Load environment variables
+import dotenv from 'dotenv';
+dotenv.config({ path: '.env.local' }); // Ensure .env.local is loaded if needed server-side
+
 const API_KEY = process.env.GOOGLE_API_KEY;
 
 if (!API_KEY) {
     throw new Error("GOOGLE_API_KEY environment variable not set");
 }
 
-const genAI = new GoogleGenerativeAI(API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
+const genAI = new GoogleGenAI({ apiKey: API_KEY }); // Correct instantiation
 const generationConfig = {
     temperature: 0.9,
     topK: 1,
@@ -51,17 +53,19 @@ const mapMessagesToGemini = (messages: Message[]): Content[] => {
     }));
 };
 
-// Define the tool(s) for Gemini Function Calling, explicitly typed
-const tools: Tool[] = [{
+// Define the tool(s) for Gemini Function Calling
+// Note: SchemaType might be inferred or use a different enum in @google/genai
+// Keeping explicit types for now, adjust if TS errors occur.
+const functionDeclarationsTool: Tool = {
     functionDeclarations: [
         {
             name: "send_message", // Keep consistent naming if WhatsApp server expects this
             description: "Sends a message to a specified WhatsApp contact or group.",
             parameters: {
-                type: SchemaType.OBJECT, // Use SchemaType enum
+                type: Type.OBJECT, // Use Type enum
                 properties: {
-                    recipient: { type: SchemaType.STRING, description: "The phone number (with country code) or group JID to send the message to." },
-                    message: { type: SchemaType.STRING, description: "The text message content to send." },
+                    recipient: { type: Type.STRING, description: "The phone number (with country code) or group JID to send the message to." },
+                    message: { type: Type.STRING, description: "The text message content to send." },
                 },
                 required: ["recipient", "message"],
             },
@@ -70,32 +74,156 @@ const tools: Tool[] = [{
             name: "list_chats",
             description: "Lists the available WhatsApp chats, optionally filtering by name.",
             parameters: {
-                type: SchemaType.OBJECT,
+                type: Type.OBJECT,
                 properties: {
-                    query: { type: SchemaType.STRING, description: "Optional text to filter chats by name." },
-                    limit: { type: SchemaType.NUMBER, description: "Optional maximum number of chats to return." }
+                    query: { type: Type.STRING, description: "Optional search term to filter chats by name or JID" },
+                    limit: { type: Type.NUMBER, description: "Maximum number of chats to return (default 20)" },
+                    page: { type: Type.NUMBER, description: "Page number for pagination (default 0)" },
+                    include_last_message: { type: Type.BOOLEAN, description: "Whether to include the last message in each chat (default True)" },
+                    sort_by: { type: Type.STRING, description: 'Field to sort results by, either "last_active" or "name" (default "last_active")' }
                 },
-                required: [], // No required parameters based on description
+                required: [],
             },
         },
         {
             name: "search_contacts",
             description: "Searches for WhatsApp contacts by name or phone number.",
             parameters: {
-                type: SchemaType.OBJECT,
+                type: Type.OBJECT,
                 properties: {
-                    query: { type: SchemaType.STRING, description: "The name or phone number fragment to search for." },
-                    limit: { type: SchemaType.NUMBER, description: "Optional maximum number of contacts to return." }
+                    query: { type: Type.STRING, description: "Search term to match against contact names or phone numbers" },
+                    // limit is not a parameter in the python function
                 },
-                required: ["query"], // Query is likely required for a search
+                required: ["query"],
+            },
+        },
+        {
+            name: "list_messages",
+            description: "Retrieves messages with optional filters and context.",
+            parameters: {
+                type: Type.OBJECT,
+                properties: {
+                    after: { type: Type.STRING, description: "Optional ISO-8601 formatted string to only return messages after this date" },
+                    before: { type: Type.STRING, description: "Optional ISO-8601 formatted string to only return messages before this date" },
+                    sender_phone_number: { type: Type.STRING, description: "Optional phone number to filter messages by sender" },
+                    chat_jid: { type: Type.STRING, description: "Optional chat JID to filter messages by chat" },
+                    query: { type: Type.STRING, description: "Optional search term to filter messages by content" },
+                    limit: { type: Type.NUMBER, description: "Maximum number of messages to return (default 20)" },
+                    page: { type: Type.NUMBER, description: "Page number for pagination (default 0)" },
+                    include_context: { type: Type.BOOLEAN, description: "Whether to include messages before and after matches (default True)" },
+                    context_before: { type: Type.NUMBER, description: "Number of messages to include before each match (default 1)" },
+                    context_after: { type: Type.NUMBER, description: "Number of messages to include after each match (default 1)" }
+                },
+                required: [], // All parameters are optional in main.py
+            },
+        },
+        {
+            name: "get_chat",
+            description: "Get information about a specific chat.",
+            parameters: {
+                type: Type.OBJECT,
+                properties: {
+                    chat_jid: { type: Type.STRING, description: "The JID of the chat to retrieve" },
+                    include_last_message: { type: Type.BOOLEAN, description: "Whether to include the last message (default True)" }
+                },
+                required: ["chat_jid"],
+            },
+        },
+        {
+            name: "get_direct_chat_by_contact",
+            description: "Find a direct chat with a specific contact.",
+            parameters: {
+                type: Type.OBJECT,
+                properties: {
+                    sender_phone_number: { type: Type.STRING, description: "The phone number to search for" },
+                },
+                required: ["sender_phone_number"],
+            },
+        },
+        {
+            name: "get_contact_chats",
+            description: "List all chats involving a specific contact.",
+            parameters: {
+                type: Type.OBJECT,
+                properties: {
+                    jid: { type: Type.STRING, description: "The contact's JID to search for" },
+                    limit: { type: Type.NUMBER, description: "Maximum number of chats to return (default 20)" },
+                    page: { type: Type.NUMBER, description: "Page number for pagination (default 0)" }
+                },
+                required: ["jid"],
+            },
+        },
+        {
+            name: "get_last_interaction",
+            description: "Get the most recent message with a contact.",
+            parameters: {
+                type: Type.OBJECT,
+                properties: {
+                    jid: { type: Type.STRING, description: "The JID of the contact." }, // Changed from contact_jid
+                },
+                required: ["jid"], // Changed from contact_jid
+            },
+        },
+        {
+            name: "get_message_context",
+            description: "Retrieve context around a specific message.",
+            parameters: {
+                type: Type.OBJECT,
+                properties: {
+                    message_id: { type: Type.STRING, description: "The ID of the message to get context for" },
+                    before: { type: Type.NUMBER, description: "Number of messages to include before the target message (default 5)" },
+                    after: { type: Type.NUMBER, description: "Number of messages to include after the target message (default 5)" }
+                    // chat_jid is not a parameter in main.py
+                },
+                required: ["message_id"],
+            },
+        },
+        {
+            name: "send_file",
+            description: "Send a file (image, video, raw audio, document) to a specified recipient.",
+            parameters: {
+                type: Type.OBJECT,
+                properties: {
+                    recipient: { type: Type.STRING, description: "The recipient phone number (no symbols) or JID." },
+                    media_path: { type: Type.STRING, description: "The absolute path to the media file to send (image, video, document)" },
+                    // caption is not a parameter in main.py
+                },
+                required: ["recipient", "media_path"],
+            },
+        },
+        {
+            name: "send_audio_message",
+            description: "Send an audio file as a WhatsApp voice message (requires the file to be an .ogg opus file or ffmpeg must be installed).",
+            parameters: {
+                type: Type.OBJECT,
+                properties: {
+                    recipient: { type: Type.STRING, description: "The recipient phone number (no symbols) or JID." },
+                    media_path: { type: Type.STRING, description: "The absolute path to the audio file to send (will be converted to Opus .ogg if needed)" },
+                },
+                required: ["recipient", "media_path"],
+            },
+        },
+        {
+            name: "download_media",
+            description: "Download media from a WhatsApp message and get the local file path.",
+            parameters: {
+                type: Type.OBJECT,
+                properties: {
+                    message_id: { type: Type.STRING, description: "The ID of the message containing the media." },
+                    chat_jid: { type: Type.STRING, description: "The JID of the chat the message belongs to." },
+                },
+                required: ["message_id", "chat_jid"],
             },
         },
         // Add other tools here later
-    ],
-    // },
-    // {
-    //     googleSearchRetrieval: {} // Enable Google Search tool
-}];
+    ]
+};
+// Define the Google Search tool
+const googleSearchTool: Tool = {
+    googleSearch: {}, // Enable Google Search tool
+};
+// Use only function declarations due to incompatibility with googleSearch
+const tools: Tool[] = [functionDeclarationsTool];
 
 /**
  * Calls an MCP tool via a spawned stdio process.
@@ -109,7 +237,8 @@ async function callMcpToolViaSpawn(toolName: string, toolArgs: any): Promise<any
     // scriptDir will be determined within the tool-specific logic
 
     // Define WhatsApp-related tools that use the same script
-    const whatsappTools = ['send_message', 'list_chats', 'search_contacts'];
+    const whatsappTools = ['send_message', 'list_chats', 'search_contacts', 'list_messages', 'get_chat', 'get_direct_chat_by_contact', 'get_contact_chats', 'get_last_interaction', 'get_message_context', 'send_file', 'send_audio_message', 'download_media'];
+
 
     if (whatsappTools.includes(toolName)) { // Handle all WhatsApp tools via uv
         const uvPath = process.env.UV_PATH || 'uv'; // Get UV path or default to 'uv'
@@ -300,103 +429,137 @@ export async function POST(request: Request) {
         // 4. Define the system instruction separately using the 'model' role as required by Content type
         const systemInstruction: Content = { role: 'model', parts: [{ text: systemPrompt }] };
 
-        // 5. Start chat session using the dedicated systemInstruction parameter
-        const chat = model.startChat({
-            generationConfig,
-            safetySettings,
+        // 5. Start chat session using genAI.chats.create
+        const chat = genAI.chats.create({
+            model: "gemini-2.0-flash-001", // Specify model name here
             history: chatHistoryForStart, // History strictly starts with 'user' or is empty
-            tools: tools,
-            systemInstruction: systemInstruction, // Pass system prompt here
+            config: { // Pass other configs within the 'config' object
+                ...generationConfig, // Spread generationConfig properties directly
+                safetySettings,
+                tools: tools, // Pass combined tools array
+                systemInstruction: systemInstruction, // Pass system prompt here
+                // toolConfig: { functionCallingConfig: { mode: FunctionCallingConfigMode.AUTO } } // Optional: Explicitly set tool config if needed
+            }
         });
 
         // --- Start Conversation Loop ---
         // The first prompt sent to Gemini is the content of the latest message.
-        let currentPrompt: string | Part[] = latestMessage.parts;
+        let currentPrompt: string | Part[] = latestMessage.parts ?? []; // Add fallback for potentially undefined parts
         let safetyAlert = false;
         let finalApiResponse: NextResponse | null = null; // To store the final response
 
         for (let i = 0; i < 5; i++) { // Limit loops
             console.log(`--- Loop ${i + 1}: Sending to Gemini ---`);
-            const result = await chat.sendMessage(currentPrompt);
-            const response = result.response;
+            // Use sendMessage with a parameters object
+            const result = await chat.sendMessage({ message: currentPrompt });
+            // Access response data directly from the result object
+            const response = result; // Use the result object directly
 
-            console.log(`DEBUG: Gemini Response (Loop ${i + 1}):`, JSON.stringify(response, null, 2));
+            // DEBUG: Log the raw response structure to understand the new SDK's format
+            console.log(`DEBUG: Raw Gemini Response (Loop ${i + 1}):`, JSON.stringify(response, null, 2));
 
-            if (!response) {
-                console.error('Gemini API response object is missing');
-                finalApiResponse = NextResponse.json({ error: 'Failed to get response object from LLM' }, { status: 500 });
-                break; // Exit loop
+            // Check if candidates exist (response structure might vary on error)
+            if (!response.candidates || response.candidates.length === 0) {
+                console.error('Gemini API response missing candidates:', response);
+                // Check for prompt feedback block reason
+                if (response.promptFeedback?.blockReason) {
+                    console.warn(`Prompt blocked due to ${response.promptFeedback.blockReason}`);
+                    safetyAlert = true; // Treat prompt blocking as a safety alert
+                    // Return appropriate response immediately
+                    return NextResponse.json({ reply: { sender: 'llm', text: `Prompt blocked due to ${response.promptFeedback.blockReason}` } }, { status: 200 });
+                }
+                finalApiResponse = NextResponse.json({ error: 'LLM returned no candidates or unexpected response structure' }, { status: 500 });
+                // Return appropriate response immediately
+                return finalApiResponse;
             }
 
             // Check safety ratings
             if (response.promptFeedback?.blockReason || response.candidates?.[0]?.finishReason === 'SAFETY') {
                 console.warn("Gemini response blocked due to safety settings.");
                 safetyAlert = true;
-                break; // Exit loop
+                // Return appropriate response immediately
+                return NextResponse.json({ reply: { sender: 'llm', text: "Response blocked by safety settings." } }, { status: 200 });
             }
 
-            const functionCalls = response.functionCalls();
+            // --- Extract Function Calls (Adjust based on new SDK structure) ---
+            // Assuming function calls are now within response.candidates[0].content.parts
+            const functionCallParts = response.candidates?.[0]?.content?.parts?.filter((part: Part) => !!part.functionCall) ?? []; // Add Part type
+            const functionCalls = functionCallParts.map((part: Part) => part.functionCall).filter((fc: Part['functionCall'] | undefined): fc is NonNullable<Part['functionCall']> => !!fc); // Added explicit type to fc and used NonNullable
 
-            if (functionCalls && functionCalls.length > 0) {
+            if (functionCalls && functionCalls.length > 0) { // Check if the extracted array has calls
+                // --- Handle Function Call ---
                 console.log("DEBUG: Detected function call(s):", JSON.stringify(functionCalls, null, 2));
                 const functionCall = functionCalls[0]; // Handle first call
                 const toolName = functionCall.name;
                 const toolArgs = functionCall.args;
-                let toolExecutionResult: any; // Renamed from toolResult to avoid conflict
+                let toolExecutionResult: any;
+
+                if (!toolName) {
+                    console.error("Function call received without a name:", JSON.stringify(functionCall, null, 2));
+                    currentPrompt = [{ functionResponse: { name: "unknown_tool", response: { error: "Function call received without a tool name." } } }];
+                    continue; // Send error back to Gemini in next loop iteration
+                }
 
                 try {
-                    // --- Call MCP Tool via Spawn ---
-                    toolExecutionResult = await callMcpToolViaSpawn(toolName, toolArgs); // Use renamed variable
+                    console.log(`Executing tool '${toolName}' with args:`, toolArgs);
+                    toolExecutionResult = await callMcpToolViaSpawn(toolName, toolArgs);
                     console.log(`DEBUG: Tool '${toolName}' executed successfully. Result:`, toolExecutionResult);
-                    // --- Prepare Function Response Part for next Gemini call ---
-                    currentPrompt = [{
-                        functionResponse: {
-                            name: toolName,
-                            response: { content: toolExecutionResult }, // Pass result back
-                        },
-                    }];
-                    // Continue the loop
-
+                    currentPrompt = [{ functionResponse: { name: toolName, response: toolExecutionResult } }];
+                    continue; // Explicitly continue to next iteration
                 } catch (error: any) {
                     console.error(`Error executing tool '${toolName}' via spawn:`, error);
-                    // Send error back to Gemini
-                    currentPrompt = [{
-                        functionResponse: {
-                            name: toolName,
-                            response: { content: { error: `Failed to execute tool: ${error.message}` } },
-                        },
-                    }];
-                    // Continue loop, let Gemini handle the error message
+                    currentPrompt = [{ functionResponse: { name: toolName, response: { error: `Failed to execute tool: ${error.message}` } } }];
+                    continue; // Explicitly continue to next iteration even on error
                 }
-            } else if (response.text) {
-                // --- Regular Text Response (End of Loop) ---
-                const replyText = response.text();
-                console.log("DEBUG: Final Gemini Text Response:", replyText);
-                const finalReply: Message = { sender: 'llm', text: replyText };
-                finalApiResponse = NextResponse.json({ reply: finalReply }, { status: 200 });
-                break; // Exit loop
+                // Continue loop to send function response back to Gemini
+
             } else {
-                // Handle unexpected empty response
-                console.error('Gemini response missing text and function calls:', response);
-                finalApiResponse = NextResponse.json({ error: 'LLM returned empty or unexpected response' }, { status: 500 });
-                break; // Exit loop
+                // --- Handle Text Response ---
+                const textParts = response.candidates?.[0]?.content?.parts?.filter((part: Part) => !!part.text) ?? [];
+                const replyText = textParts.map((part: Part) => part.text).join("");
+
+                if (replyText) {
+                    console.log("DEBUG: Final Gemini Text Response:", replyText);
+                    const finalReply: Message = { sender: 'llm', text: replyText };
+                    finalApiResponse = NextResponse.json({ reply: finalReply }, { status: 200 });
+                    // Return the successful text response immediately
+                    return finalApiResponse;
+                } else {
+                    // --- Handle No Text and No Function Call ---
+                    console.warn(`Gemini response (Loop ${i + 1}) had no text or function calls.`);
+                    const finishReason = response.candidates?.[0]?.finishReason;
+                    if (finishReason && finishReason !== 'STOP') { // Check if finishReason indicates an issue (anything other than STOP)
+                        console.error(`Gemini response finished unexpectedly: ${finishReason}`);
+                        finalApiResponse = NextResponse.json({ error: `LLM response finished unexpectedly: ${finishReason}` }, { status: 500 });
+                    } else {
+                        // This might happen if the model just stops without output after a tool call, or has nothing more to say.
+                        console.error('LLM returned empty or unexpected response structure:', response);
+                        finalApiResponse = NextResponse.json({ error: 'LLM returned empty or unexpected response.' }, { status: 500 });
+                    }
+                    // Return the error response immediately
+                    return finalApiResponse;
+                }
             }
-        } // --- End Loop ---
 
-        // Return the final response determined in the loop
-        if (finalApiResponse) {
-            return finalApiResponse;
+            console.log("DEBUG: Exited loop. Checking final response conditions..."); // ADDED LOG
+            // Return the final response determined in the loop
+            if (finalApiResponse) {
+                console.log("DEBUG: Returning finalApiResponse set within loop."); // ADDED LOG
+                return finalApiResponse;
+            }
+
+            // Handle cases where loop finished without a definitive response
+            if (safetyAlert) {
+                console.log("DEBUG: Returning safety alert response."); // ADDED LOG
+                return NextResponse.json({ reply: { sender: 'llm', text: "I cannot provide a response due to safety concerns." } }, { status: 200 });
+            } else {
+                // Max iterations reached
+                console.error("Maximum tool call loops reached without final text response.");
+                console.log("DEBUG: Returning max iterations/unexpected exit response."); // ADDED LOG
+                return NextResponse.json({ error: 'Agent reached maximum interaction depth' }, { status: 500 });
+            }
+
         }
-
-        // Handle cases where loop finished without a definitive response
-        if (safetyAlert) {
-            return NextResponse.json({ reply: { sender: 'llm', text: "I cannot provide a response due to safety concerns." } }, { status: 200 });
-        } else {
-            // Max iterations reached
-            console.error("Maximum tool call loops reached without final text response.");
-            return NextResponse.json({ error: 'Agent reached maximum interaction depth' }, { status: 500 });
-        }
-
     } catch (error) {
         console.error('Error processing chat request:', error);
         const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
