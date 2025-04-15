@@ -1,5 +1,6 @@
 # Ignore the cloned whatsapp MCP server source code directory
 whatsapp-mcp/
 
-# Ignore the cloned cline source code directory
+# Ignore the cloned source code directory
 cline/
+Roo-Code/
