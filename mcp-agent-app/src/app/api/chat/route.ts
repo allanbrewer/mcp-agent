@@ -1,8 +1,8 @@
-import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
+import { spawn } from 'child_process';
 // Use types from the new SDK import
-import { GoogleGenAI, HarmCategory, HarmBlockThreshold, Content, Part, FunctionDeclaration, Tool, FunctionCallingConfigMode, Type } from '@google/genai'; // Revert back to GoogleGenAI class name
+import { GoogleGenAI, HarmCategory, HarmBlockThreshold, Content, Part, FunctionDeclaration, Tool, FunctionCallingConfigMode, Type } from '@google/genai';
 
 // Define the structure for a message
 interface Message {
@@ -15,10 +15,29 @@ interface RequestBody {
     messages: Message[];
 }
 
+// --- MCP Server Configuration Interfaces ---
+interface McpToolParameterProperty { type: string; description?: string; }
+interface McpToolParameters { type: string; properties: Record<string, McpToolParameterProperty>; required?: string[]; }
+interface McpToolConfig { name: string; description: string; parameters: McpToolParameters; }
+interface McpServerCommandConfig {
+    executableEnvVar?: string;
+    defaultExecutable: string;
+    argsTemplate: string[];
+    scriptDirEnvVar?: string;
+    envVars?: string[]; // Optional environment variables for the child process
+}
+interface McpServerConfig {
+    id: string;
+    description: string;
+    command: McpServerCommandConfig;
+    tools: McpToolConfig[];
+}
 // Load environment variables
 import dotenv from 'dotenv';
-dotenv.config({ path: '.env.local' }); // Ensure .env.local is loaded if needed server-side
+import fs from 'fs'; // Import fs for reading config file
+import path from 'path'; // Import path for resolving config file path
 
+dotenv.config({ path: '.env.local' }); // Ensure .env.local is loaded if needed server-side
 const API_KEY = process.env.GOOGLE_API_KEY;
 
 if (!API_KEY) {
@@ -26,11 +45,34 @@ if (!API_KEY) {
 }
 
 const genAI = new GoogleGenAI({ apiKey: API_KEY }); // Correct instantiation
+
+// --- Placeholder for MCP Configuration Loading ---
+// TODO: Replace this with a proper configuration loading mechanism (e.g., singleton service)
+let loadedMcpConfigs: McpServerConfig[] = [];
+try {
+    // Construct the absolute path to the config file relative to the current file
+    // Go up from api/chat/route.ts -> api/ -> app/ -> src/ -> mcp-agent-app/ then down to mcp-config.json
+    const configPath = path.resolve(__dirname, '../../../../../mcp-config.json');
+    console.log(`Attempting to load MCP config from: ${configPath}`); // Log path
+    const configFileContent = fs.readFileSync(configPath, 'utf-8');
+    const configJson = JSON.parse(configFileContent);
+    if (configJson && Array.isArray(configJson.servers)) {
+        // Basic validation could be added here to ensure objects match McpServerConfig
+        loadedMcpConfigs = configJson.servers as McpServerConfig[];
+        console.log(`Successfully loaded ${loadedMcpConfigs.length} MCP server configurations.`);
+    } else {
+        console.error("Invalid MCP config format in mcp-config.json. Expected '{ \"servers\": [...] }'.");
+    }
+} catch (error) {
+    console.error("Failed to load or parse mcp-config.json:", error);
+    // Continue without MCP tools if config fails to load
+}
+// --- End Placeholder ---
 const generationConfig = {
     temperature: 0.9,
     topK: 1,
     topP: 1,
-    maxOutputTokens: 2048,
+    maxOutputTokens: 8192, // Increased token limit for potentially larger prompts/responses
 };
 
 const safetySettings = [
@@ -40,12 +82,11 @@ const safetySettings = [
     { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
 ];
 
-// System prompt definition
-const systemPrompt = `You are a helpful and informative assistant. You can answer questions, generate creative text formats, and provide information on a wide range of topics. You also have access to external tools that allow you to interact with other services, such as messaging apps, email, GitHub, etc. Use these tools when appropriate to fulfill the user's request, but answer general knowledge questions directly if no tool is needed.`;
+// Base system prompt - will be augmented dynamically
+const baseSystemPrompt = `You are a helpful and informative assistant. You can answer questions, generate creative text formats, and provide information on a wide range of topics.
+You have access to external tools via connected MCP (Model Context Protocol) servers. To use these tools, call the 'use_mcp_tool' function.`;
 
-// Helper function to map app's message format to Gemini's format, ensuring 'user' follows system prompt if user messages exist.
 // Helper function to map app's message format to Gemini's Content format.
-// Does NOT add the system prompt here.
 const mapMessagesToGemini = (messages: Message[]): Content[] => {
     return messages.map(msg => ({
         role: msg.sender === 'user' ? 'user' : 'model',
@@ -53,343 +94,215 @@ const mapMessagesToGemini = (messages: Message[]): Content[] => {
     }));
 };
 
-// Define the tool(s) for Gemini Function Calling
-// Note: SchemaType might be inferred or use a different enum in @google/genai
-// Keeping explicit types for now, adjust if TS errors occur.
-const functionDeclarationsTool: Tool = {
+// Define the generic MCP tool(s) for Gemini Function Calling
+const genericTools: Tool[] = [{
     functionDeclarations: [
         {
-            name: "send_message", // Keep consistent naming if WhatsApp server expects this
-            description: "Sends a message to a specified WhatsApp contact or group.",
-            parameters: {
-                type: Type.OBJECT, // Use Type enum
-                properties: {
-                    recipient: { type: Type.STRING, description: "The phone number (with country code) or group JID to send the message to." },
-                    message: { type: Type.STRING, description: "The text message content to send." },
-                },
-                required: ["recipient", "message"],
-            },
-        },
-        {
-            name: "list_chats",
-            description: "Lists the available WhatsApp chats, optionally filtering by name.",
+            name: "use_mcp_tool",
+            description: "Executes a specific tool on a connected MCP server. Use this to interact with external services like WhatsApp, GitHub, etc., based on the available servers and tools listed in the system prompt.",
             parameters: {
                 type: Type.OBJECT,
                 properties: {
-                    query: { type: Type.STRING, description: "Optional search term to filter chats by name or JID" },
-                    limit: { type: Type.NUMBER, description: "Maximum number of chats to return (default 20)" },
-                    page: { type: Type.NUMBER, description: "Page number for pagination (default 0)" },
-                    include_last_message: { type: Type.BOOLEAN, description: "Whether to include the last message in each chat (default True)" },
-                    sort_by: { type: Type.STRING, description: 'Field to sort results by, either "last_active" or "name" (default "last_active")' }
+                    serverName: { type: Type.STRING, description: "The unique ID (name) of the target MCP server (e.g., 'whatsapp-mcp')." },
+                    toolName: { type: Type.STRING, description: "The name of the specific tool to execute on the server (e.g., 'send_message', 'list_chats')." },
+                    arguments: {
+                        type: Type.OBJECT,
+                        description: "An object containing the arguments required by the specific tool being called.",
+                        // Properties vary per tool, Gemini infers based on descriptions.
+                    }
                 },
-                required: [],
+                required: ["serverName", "toolName", "arguments"],
             },
         },
-        {
-            name: "search_contacts",
-            description: "Searches for WhatsApp contacts by name or phone number.",
-            parameters: {
-                type: Type.OBJECT,
-                properties: {
-                    query: { type: Type.STRING, description: "Search term to match against contact names or phone numbers" },
-                    // limit is not a parameter in the python function
-                },
-                required: ["query"],
-            },
-        },
-        {
-            name: "list_messages",
-            description: "Retrieves messages with optional filters and context.",
-            parameters: {
-                type: Type.OBJECT,
-                properties: {
-                    after: { type: Type.STRING, description: "Optional ISO-8601 formatted string to only return messages after this date" },
-                    before: { type: Type.STRING, description: "Optional ISO-8601 formatted string to only return messages before this date" },
-                    sender_phone_number: { type: Type.STRING, description: "Optional phone number to filter messages by sender" },
-                    chat_jid: { type: Type.STRING, description: "Optional chat JID to filter messages by chat" },
-                    query: { type: Type.STRING, description: "Optional search term to filter messages by content" },
-                    limit: { type: Type.NUMBER, description: "Maximum number of messages to return (default 20)" },
-                    page: { type: Type.NUMBER, description: "Page number for pagination (default 0)" },
-                    include_context: { type: Type.BOOLEAN, description: "Whether to include messages before and after matches (default True)" },
-                    context_before: { type: Type.NUMBER, description: "Number of messages to include before each match (default 1)" },
-                    context_after: { type: Type.NUMBER, description: "Number of messages to include after each match (default 1)" }
-                },
-                required: [], // All parameters are optional in main.py
-            },
-        },
-        {
-            name: "get_chat",
-            description: "Get information about a specific chat.",
-            parameters: {
-                type: Type.OBJECT,
-                properties: {
-                    chat_jid: { type: Type.STRING, description: "The JID of the chat to retrieve" },
-                    include_last_message: { type: Type.BOOLEAN, description: "Whether to include the last message (default True)" }
-                },
-                required: ["chat_jid"],
-            },
-        },
-        {
-            name: "get_direct_chat_by_contact",
-            description: "Find a direct chat with a specific contact.",
-            parameters: {
-                type: Type.OBJECT,
-                properties: {
-                    sender_phone_number: { type: Type.STRING, description: "The phone number to search for" },
-                },
-                required: ["sender_phone_number"],
-            },
-        },
-        {
-            name: "get_contact_chats",
-            description: "List all chats involving a specific contact.",
-            parameters: {
-                type: Type.OBJECT,
-                properties: {
-                    jid: { type: Type.STRING, description: "The contact's JID to search for" },
-                    limit: { type: Type.NUMBER, description: "Maximum number of chats to return (default 20)" },
-                    page: { type: Type.NUMBER, description: "Page number for pagination (default 0)" }
-                },
-                required: ["jid"],
-            },
-        },
-        {
-            name: "get_last_interaction",
-            description: "Get the most recent message with a contact.",
-            parameters: {
-                type: Type.OBJECT,
-                properties: {
-                    jid: { type: Type.STRING, description: "The JID of the contact." }, // Changed from contact_jid
-                },
-                required: ["jid"], // Changed from contact_jid
-            },
-        },
-        {
-            name: "get_message_context",
-            description: "Retrieve context around a specific message.",
-            parameters: {
-                type: Type.OBJECT,
-                properties: {
-                    message_id: { type: Type.STRING, description: "The ID of the message to get context for" },
-                    before: { type: Type.NUMBER, description: "Number of messages to include before the target message (default 5)" },
-                    after: { type: Type.NUMBER, description: "Number of messages to include after the target message (default 5)" }
-                    // chat_jid is not a parameter in main.py
-                },
-                required: ["message_id"],
-            },
-        },
-        {
-            name: "send_file",
-            description: "Send a file (image, video, raw audio, document) to a specified recipient.",
-            parameters: {
-                type: Type.OBJECT,
-                properties: {
-                    recipient: { type: Type.STRING, description: "The recipient phone number (no symbols) or JID." },
-                    media_path: { type: Type.STRING, description: "The absolute path to the media file to send (image, video, document)" },
-                    // caption is not a parameter in main.py
-                },
-                required: ["recipient", "media_path"],
-            },
-        },
-        {
-            name: "send_audio_message",
-            description: "Send an audio file as a WhatsApp voice message (requires the file to be an .ogg opus file or ffmpeg must be installed).",
-            parameters: {
-                type: Type.OBJECT,
-                properties: {
-                    recipient: { type: Type.STRING, description: "The recipient phone number (no symbols) or JID." },
-                    media_path: { type: Type.STRING, description: "The absolute path to the audio file to send (will be converted to Opus .ogg if needed)" },
-                },
-                required: ["recipient", "media_path"],
-            },
-        },
-        {
-            name: "download_media",
-            description: "Download media from a WhatsApp message and get the local file path.",
-            parameters: {
-                type: Type.OBJECT,
-                properties: {
-                    message_id: { type: Type.STRING, description: "The ID of the message containing the media." },
-                    chat_jid: { type: Type.STRING, description: "The JID of the chat the message belongs to." },
-                },
-                required: ["message_id", "chat_jid"],
-            },
-        },
-        // Add other tools here later
+        // TODO: Add access_mcp_resource definition if needed later
+        // {
+        //     name: "access_mcp_resource",
+        //     description: "Accesses a specific resource provided by a connected MCP server.",
+        //     parameters: {
+        //         type: Type.OBJECT,
+        //         properties: {
+        //             serverName: { type: Type.STRING, description: "The unique ID of the target MCP server." },
+        //             resourceUri: { type: Type.STRING, description: "The URI of the resource to access." }
+        //         },
+        //         required: ["serverName", "resourceUri"],
+        //     },
+        // },
     ]
+}];
+
+// Helper function to format MCP tool results for Gemini
+const formatToolResultForGemini = (toolName: string, result: any): Part => {
+    let responseContent: object;
+
+    if (typeof result === 'object' && result !== null) {
+        // Use object results directly if they are JSON-serializable
+        responseContent = result;
+    } else if (result === undefined || result === null) {
+        // Represent null/undefined results
+        responseContent = { status: "completed", result: result };
+    } else {
+        // Wrap primitive results
+        responseContent = { result: result };
+    }
+
+    return {
+        functionResponse: {
+            name: toolName, // Use the original tool name Gemini called (e.g., 'use_mcp_tool')
+            response: responseContent as Record<string, unknown>,
+        },
+    };
 };
-// Define the Google Search tool
-const googleSearchTool: Tool = {
-    googleSearch: {}, // Enable Google Search tool
-};
-// Use only function declarations due to incompatibility with googleSearch
-const tools: Tool[] = [functionDeclarationsTool];
-
-/**
- * Calls an MCP tool via a spawned stdio process.
- * Handles initialization handshake and tool execution.
- */
-async function callMcpToolViaSpawn(toolName: string, toolArgs: any): Promise<any> {
-    console.log(`Attempting MCP tool call via spawn: ${toolName}`);
-    // Determine command based on tool name - Basic example
-    let command: string;
-    let args: string[];
-    // scriptDir will be determined within the tool-specific logic
-
-    // Define WhatsApp-related tools that use the same script
-    const whatsappTools = ['send_message', 'list_chats', 'search_contacts', 'list_messages', 'get_chat', 'get_direct_chat_by_contact', 'get_contact_chats', 'get_last_interaction', 'get_message_context', 'send_file', 'send_audio_message', 'download_media'];
 
 
-    if (whatsappTools.includes(toolName)) { // Handle all WhatsApp tools via uv
-        const uvPath = process.env.UV_PATH || 'uv'; // Get UV path or default to 'uv'
-        const whatsappScriptDir = process.env.WHATSAPP_MCP_SCRIPT_DIR; // Get WhatsApp script dir
+// Executes an MCP tool by spawning a configured process and communicating via JSON-RPC over stdio.
+async function executeMcpTool(serverConfig: McpServerConfig, toolName: string, toolArgs: any): Promise<any> {
+    return new Promise((resolve, reject) => {
+        const { command: commandConfig } = serverConfig;
 
-        if (!whatsappScriptDir) {
-            console.error("WHATSAPP_MCP_SCRIPT_DIR environment variable is not set. This is required for the 'send_message' tool.");
-            throw new Error("Configuration Error: WHATSAPP_MCP_SCRIPT_DIR environment variable is not set.");
+        // Determine executable path
+        const executable = process.env[commandConfig.executableEnvVar || ''] || commandConfig.defaultExecutable;
+        if (!executable) {
+            return reject(new Error(`Could not determine executable for MCP server ${serverConfig.id}. Checked env var '${commandConfig.executableEnvVar}' and default '${commandConfig.defaultExecutable}'.`));
         }
 
-        command = uvPath;
-        // Use the retrieved environment variable for the directory
-        args = ['run', '--directory', whatsappScriptDir, 'main.py'];
-    }
-    else {
-        throw new Error(`Unsupported tool name for spawn execution: ${toolName}`);
-    }
-
-
-    return new Promise((resolve, reject) => {
-        const mcpProcess = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-        let stdoutBuffer = '';
-        let errorData = '';
-        let isInitialized = false;
-        let initializeResponseReceived = false;
-        let toolCallResponseReceived = false;
-        let initializeRequestId: string | null = null;
-        let toolCallRequestId: string | null = null;
-
-        // Set a timeout for the entire operation
-        const operationTimeout = setTimeout(() => {
-            if (!toolCallResponseReceived) {
-                console.error(`MCP operation timed out after 30 seconds for tool: ${toolName}`);
-                if (mcpProcess && !mcpProcess.killed) {
-                    mcpProcess.kill('SIGTERM'); // Attempt graceful shutdown
-                    console.log("Sent SIGTERM to MCP process due to timeout.");
-                }
-                reject(new Error(`MCP operation timed out for tool: ${toolName}`));
+        // Determine script directory if needed
+        let scriptDir: string | undefined = undefined;
+        if (commandConfig.scriptDirEnvVar) {
+            scriptDir = process.env[commandConfig.scriptDirEnvVar];
+            if (!scriptDir) {
+                return reject(new Error(`Environment variable '${commandConfig.scriptDirEnvVar}' required for MCP server ${serverConfig.id} script directory is not set.`));
             }
-        }, 30000); // 30 seconds timeout
+        }
 
-        const cleanup = () => {
-            clearTimeout(operationTimeout);
-            // Ensure listeners are removed to prevent memory leaks
-            if (mcpProcess && mcpProcess.stdout) mcpProcess.stdout.removeAllListeners();
-            if (mcpProcess && mcpProcess.stderr) mcpProcess.stderr.removeAllListeners();
-            if (mcpProcess) mcpProcess.removeAllListeners();
-        };
+        // Process argument template
+        const args = commandConfig.argsTemplate.map(arg => {
+            if (arg === '{SCRIPT_DIR}') {
+                if (!scriptDir) {
+                    reject(new Error(`Argument template for ${serverConfig.id} requires {SCRIPT_DIR}, but no script directory is configured or found.`));
+                    return ''; // Return empty string to satisfy map, rejection handles the error flow
+                }
+                return scriptDir;
+            }
+            return arg;
+        }).filter(arg => arg !== ''); // Filter out empty strings potentially caused by rejection
 
-        const processLine = (line: string) => {
-            if (!line || toolCallResponseReceived) return; // Ignore empty lines or if already done
-            try {
-                const parsedResponse = JSON.parse(line);
+        // If a rejection happened during arg processing, the promise is already rejected, so exit the function.
+        if (args.length !== commandConfig.argsTemplate.length && commandConfig.argsTemplate.includes('{SCRIPT_DIR}') && !scriptDir) {
+            return;
+        }
 
-                // Check if it's the initialize response
-                if (!initializeResponseReceived && parsedResponse.id === initializeRequestId && parsedResponse.result?.capabilities) {
-                    console.log("MCP Initialization successful.");
-                    initializeResponseReceived = true;
-                    isInitialized = true;
+        console.log(`Spawning MCP process: ${executable} ${args.join(' ')}`);
 
-                    // --- Send Initialized Notification ---
-                    const initializedNotification = { jsonrpc: "2.0", method: "notifications/initialized", params: {} };
-                    const initializedString = JSON.stringify(initializedNotification) + '\n';
-                    console.log("Sending MCP Initialized Notification.");
-                    if (!mcpProcess.stdin.writableEnded) {
-                        mcpProcess.stdin.write(initializedString);
-                    } else {
-                        console.error("MCP stdin closed before sending initialized notification.");
-                        if (!toolCallResponseReceived) reject(new Error("MCP stdin closed prematurely (initialized notification)."));
-                        cleanup(); return;
-                    }
-
-                    // --- Introduce Delay before sending Tool Call Request ---
-                    console.log("Waiting 100ms before sending tool call...");
-                    setTimeout(() => {
-                        if (!isInitialized || !mcpProcess || mcpProcess.killed || mcpProcess.stdin.writableEnded) {
-                            console.error("MCP state invalid or process closed before sending tool call.");
-                            if (!toolCallResponseReceived) reject(new Error("MCP state invalid or process closed before tool call."));
-                            cleanup(); return;
-                        }
-                        toolCallRequestId = randomUUID();
-                        // Adjust method based on MCP server expectation (e.g., 'tools/call' or the tool name directly)
-                        // The lharries/whatsapp-mcp server seems to expect the tool name directly as the method
-                        const toolCallRequest = {
-                            jsonrpc: "2.0",
-                            method: "tools/call", // Standard MCP method for tool calls
-                            params: {          // Parameters nested under 'params'
-                                name: toolName,      // Tool name
-                                arguments: toolArgs  // Tool arguments
-                            },
-                            id: toolCallRequestId
-                        };
-                        const toolCallString = JSON.stringify(toolCallRequest) + '\n';
-                        console.log(`Sending MCP Tool Call Request: ${toolName}`);
-                        mcpProcess.stdin.write(toolCallString);
-                        mcpProcess.stdin.end(); // End stdin after sending the *last* request
-                        console.log("MCP stdin ended.");
-
-                    }, 100); // 100ms delay
-
-                } else if (isInitialized && !toolCallResponseReceived && parsedResponse.id === toolCallRequestId) {
-                    // This should be the tool call response
-                    toolCallResponseReceived = true;
-                    if (parsedResponse.error) {
-                        console.error("MCP tool call returned an error:", JSON.stringify(parsedResponse.error, null, 2));
-                        reject(new Error(`MCP Tool Call Error: ${parsedResponse.error.message || JSON.stringify(parsedResponse.error)}`));
-                    } else {
-                        console.log("MCP Tool Call successful.");
-                        // Resolve with the *entire* result object from the MCP server
-                        resolve(parsedResponse.result ?? { status: "ok", message: "Action completed successfully." });
-                    }
-                    cleanup();
-
+        // Prepare environment variables for the child process
+        const childEnv = { ...process.env };
+        if (commandConfig.envVars) {
+            commandConfig.envVars.forEach(envVarName => {
+                const value = process.env[envVarName];
+                if (value !== undefined) {
+                    childEnv[envVarName] = value;
                 } else {
-                    // Ignore other messages
+                    console.warn(`Optional environment variable '${envVarName}' for MCP server ${serverConfig.id} not found.`);
                 }
-            } catch (parseError: any) {
-                console.error(`Failed to parse MCP JSON: ${line}. Error: ${parseError.message}`);
+            });
+        }
+
+        // Spawn the child process
+        const childProcess = spawn(executable, args, {
+            stdio: ['pipe', 'pipe', 'pipe'], // Use pipes for stdin, stdout, stderr
+            env: childEnv,
+        });
+
+        // Variables to store data and state
+        let stdoutData = '';
+        let stderrData = '';
+        let responseReceived = false; // Ensure resolve/reject is called only once
+
+        // Handle stdout data
+        childProcess.stdout.on('data', (data) => {
+            stdoutData += data.toString();
+            console.log(`MCP Server (${serverConfig.id}) stdout:`, data.toString());
+            // Attempt to parse JSON-RPC response incrementally
+            try {
+                // Look for a complete JSON object ending marker '}' potentially followed by whitespace/newline
+                const potentialJsonResponseMatch = stdoutData.match(/({.*?})\s*$/);
+                if (potentialJsonResponseMatch && potentialJsonResponseMatch[1]) {
+                    const jsonResponse = JSON.parse(potentialJsonResponseMatch[1]);
+                    // Check if it's a valid JSON-RPC response (has result or error)
+                    if (jsonResponse && (jsonResponse.result !== undefined || jsonResponse.error !== undefined)) {
+                        if (!responseReceived) {
+                            responseReceived = true; // Mark response as received
+                            console.log(`MCP Server (${serverConfig.id}) parsed response:`, jsonResponse);
+                            if (jsonResponse.error) {
+                                reject(new Error(`MCP Tool Error (${jsonResponse.error.code || 'unknown'}): ${jsonResponse.error.message || 'Unknown error'}`));
+                            } else {
+                                resolve(jsonResponse.result);
+                            }
+                            // Optionally, kill the process if no further interaction is expected
+                            // childProcess.kill();
+                        }
+                    }
+                }
+            } catch (parseError) {
+                console.log(`MCP Server (${serverConfig.id}) JSON parse error on stdout chunk, waiting for more data...`);
             }
+        });
+
+        // Handle stderr data
+        childProcess.stderr.on('data', (data) => {
+            stderrData += data.toString();
+            console.error(`MCP Server (${serverConfig.id}) stderr:`, data.toString());
+        });
+
+        // Handle spawn errors (e.g., command not found)
+        childProcess.on('error', (error) => {
+            if (!responseReceived) {
+                responseReceived = true;
+                console.error(`MCP Server (${serverConfig.id}) spawn error:`, error);
+                reject(new Error(`Failed to spawn MCP process '${executable}': ${error.message}`));
+            }
+        });
+
+        // Handle process exit
+        childProcess.on('close', (code) => {
+            console.log(`MCP Server (${serverConfig.id}) process exited with code ${code}`);
+            if (!responseReceived) { // Only act if no JSON-RPC response was successfully parsed
+                responseReceived = true;
+                if (code !== 0) {
+                    reject(new Error(`MCP process exited with error code ${code}. Stderr: ${stderrData || 'N/A'}. Stdout: ${stdoutData || 'N/A'}`));
+                } else if (stdoutData.trim() === '') {
+                    console.warn(`MCP Server (${serverConfig.id}) process exited cleanly (code 0) but produced no stdout response.`);
+                    resolve(null); // Resolve with null, assuming this might be valid for some tools
+                } else {
+                    reject(new Error(`MCP process exited cleanly (code 0), but failed to parse JSON-RPC response from stdout. Stdout: ${stdoutData}`));
+                }
+            }
+        });
+
+        // Prepare and send the JSON-RPC request payload
+        const requestId = randomUUID();
+        const requestPayload = {
+            jsonrpc: '2.0',
+            method: toolName,
+            params: toolArgs,
+            id: requestId,
         };
 
-        mcpProcess.stdout.on('data', (data) => {
-            stdoutBuffer += data.toString();
-            let newlineIndex;
-            while ((newlineIndex = stdoutBuffer.indexOf('\n')) >= 0) {
-                const line = stdoutBuffer.substring(0, newlineIndex).trim();
-                stdoutBuffer = stdoutBuffer.substring(newlineIndex + 1);
-                processLine(line);
+        try {
+            const requestString = JSON.stringify(requestPayload) + '\n'; // Add newline delimiter
+            console.log(`Sending to MCP Server (${serverConfig.id}) stdin:`, requestString);
+            childProcess.stdin.write(requestString);
+            childProcess.stdin.end(); // Close stdin to signal end of input
+        } catch (writeError) {
+            // Handle errors during serialization or writing to stdin
+            if (!responseReceived) {
+                responseReceived = true;
+                const errorMessage = writeError instanceof Error ? writeError.message : String(writeError);
+                reject(new Error(`Failed to serialize or write MCP request: ${errorMessage}`));
+                childProcess.kill(); // Ensure the process is terminated if writing fails
             }
-        });
-
-        mcpProcess.stderr.on('data', (data) => { errorData += data.toString(); console.error(`MCP Server stderr: ${data}`); });
-        mcpProcess.on('error', (err) => { console.error(`MCP Spawn error: ${err.message}`); if (!toolCallResponseReceived) reject(new Error(`Spawn error: ${err.message}`)); cleanup(); });
-        mcpProcess.on('close', (code) => {
-            console.log(`MCP process exited with code ${code}`);
-            if (!toolCallResponseReceived) {
-                if (stdoutBuffer.trim()) { console.log("Processing remaining stdout buffer on close..."); stdoutBuffer.split('\n').forEach(processLine); }
-                if (!toolCallResponseReceived) { reject(new Error(`MCP process exited with code ${code} before completing tool call. Stderr: ${errorData || 'None'}`)); }
-            }
-            cleanup();
-        });
-
-        // --- Send Initialize Request ---
-        initializeRequestId = randomUUID();
-        const initializeRequest = { jsonrpc: "2.0", method: "initialize", params: { protocolVersion: "1.0", clientInfo: { name: "mcp-agent-nextjs-client", version: "0.1.0" }, capabilities: {} }, id: initializeRequestId };
-        const initializeRequestString = JSON.stringify(initializeRequest) + '\n';
-        console.log("Sending MCP Initialize Request.");
-        mcpProcess.stdin.write(initializeRequestString);
-    });
+        }
+    }); // End of Promise constructor
 }
-
 export async function POST(request: Request) {
     try {
         const body: RequestBody = await request.json();
@@ -399,19 +312,16 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'No messages provided' }, { status: 400 });
         }
 
-        // 1. Map application messages to Gemini format
         const mappedMessages = mapMessagesToGemini(messages);
 
         if (mappedMessages.length === 0) {
             return NextResponse.json({ error: 'Cannot start chat with empty mapped messages' }, { status: 400 });
         }
 
-        // 2. Separate the latest message (for sendMessage) from the preceding history (for startChat)
         const latestMessage = mappedMessages[mappedMessages.length - 1];
         let chatHistoryForStart = mappedMessages.slice(0, -1);
 
-        // 3. Prepare history for startChat: MUST start with 'user' or be empty.
-        //    Do NOT include the system prompt in this array.
+        // Prepare history for startChat: Ensure it starts with 'user' or is empty.
         if (chatHistoryForStart.length > 0 && chatHistoryForStart[0].role === 'model') {
             // If history starts with 'model', find the first 'user' message.
             const firstUserIndex = chatHistoryForStart.findIndex(msg => msg.role === 'user');
@@ -426,37 +336,53 @@ export async function POST(request: Request) {
         }
         // Now, chatHistoryForStart is guaranteed to be empty or start with 'user'.
 
-        // 4. Define the system instruction separately using the 'model' role as required by Content type
-        const systemInstruction: Content = { role: 'model', parts: [{ text: systemPrompt }] };
+        let dynamicSystemPrompt = baseSystemPrompt;
+        if (loadedMcpConfigs.length > 0) {
+            dynamicSystemPrompt += "\n\nAVAILABLE MCP SERVERS AND TOOLS:\n";
+            loadedMcpConfigs.forEach(server => {
+                dynamicSystemPrompt += `\nServer: ${server.id} (${server.description || 'No description'})\n`;
+                if (server.tools && server.tools.length > 0) {
+                    server.tools.forEach((tool: McpToolConfig) => {
+                        dynamicSystemPrompt += `  - Tool: ${tool.name}\n    Description: ${tool.description || 'No description'}\n`;
+                        // TODO: Consider adding parameter details (e.g., tool.parameters.properties) if helpful for the LLM.
+                    });
+                } else {
+                    dynamicSystemPrompt += "  (No tools defined in configuration)\n";
+                }
+            });
+            dynamicSystemPrompt += "\nRemember to use the 'use_mcp_tool' function with the correct 'serverName', 'toolName', and 'arguments' based on this list.";
+        } else {
+            dynamicSystemPrompt += "\n\nNo MCP servers are configured or loaded. External tools unavailable.";
+        }
 
-        // 5. Start chat session using genAI.chats.create
+        const systemInstruction: Content = { role: 'model', parts: [{ text: dynamicSystemPrompt }] };
+        console.log("Using Dynamic System Prompt:", dynamicSystemPrompt); // Log the prompt being used
+
         const chat = genAI.chats.create({
-            model: "gemini-2.0-flash-001", // Specify model name here
-            history: chatHistoryForStart, // History strictly starts with 'user' or is empty
-            config: { // Pass other configs within the 'config' object
-                ...generationConfig, // Spread generationConfig properties directly
+            model: "gemini-2.0-flash-001", // We are using the new SDK so 2.0 flash works
+            history: chatHistoryForStart,
+            config: {
+                ...generationConfig,
                 safetySettings,
-                tools: tools, // Pass combined tools array
-                systemInstruction: systemInstruction, // Pass system prompt here
-                // toolConfig: { functionCallingConfig: { mode: FunctionCallingConfigMode.AUTO } } // Optional: Explicitly set tool config if needed
+                tools: genericTools,
+                systemInstruction: systemInstruction,
+                // toolConfig: { functionCallingConfig: { mode: FunctionCallingConfigMode.ANY } } // Consider ANY mode if AUTO struggles with tool calls
             }
         });
 
         // --- Start Conversation Loop ---
         // The first prompt sent to Gemini is the content of the latest message.
-        let currentPrompt: string | Part[] = latestMessage.parts ?? []; // Add fallback for potentially undefined parts
+        let currentPrompt: string | Part[] = latestMessage.parts ?? [];
         let safetyAlert = false;
         let finalApiResponse: NextResponse | null = null; // To store the final response
 
-        for (let i = 0; i < 5; i++) { // Limit loops
+        for (let i = 0; i < 5; i++) { // Limit conversation turns to prevent infinite loops
             console.log(`--- Loop ${i + 1}: Sending to Gemini ---`);
-            // Use sendMessage with a parameters object
             const result = await chat.sendMessage({ message: currentPrompt });
-            // Access response data directly from the result object
-            const response = result; // Use the result object directly
+            const response = result;
 
             // DEBUG: Log the raw response structure to understand the new SDK's format
-            console.log(`DEBUG: Raw Gemini Response (Loop ${i + 1}):`, JSON.stringify(response, null, 2));
+            // console.log(`DEBUG: Raw Gemini Response (Loop ${i + 1}):`, JSON.stringify(response, null, 2));
 
             // Check if candidates exist (response structure might vary on error)
             if (!response.candidates || response.candidates.length === 0) {
@@ -465,97 +391,127 @@ export async function POST(request: Request) {
                 if (response.promptFeedback?.blockReason) {
                     console.warn(`Prompt blocked due to ${response.promptFeedback.blockReason}`);
                     safetyAlert = true; // Treat prompt blocking as a safety alert
-                    // Return appropriate response immediately
                     return NextResponse.json({ reply: { sender: 'llm', text: `Prompt blocked due to ${response.promptFeedback.blockReason}` } }, { status: 200 });
                 }
                 finalApiResponse = NextResponse.json({ error: 'LLM returned no candidates or unexpected response structure' }, { status: 500 });
-                // Return appropriate response immediately
-                return finalApiResponse;
+                return finalApiResponse; // Exit immediately
             }
 
             // Check safety ratings
             if (response.promptFeedback?.blockReason || response.candidates?.[0]?.finishReason === 'SAFETY') {
                 console.warn("Gemini response blocked due to safety settings.");
                 safetyAlert = true;
-                // Return appropriate response immediately
-                return NextResponse.json({ reply: { sender: 'llm', text: "Response blocked by safety settings." } }, { status: 200 });
+                return NextResponse.json({ reply: { sender: 'llm', text: "Response blocked by safety settings." } }, { status: 200 }); // Exit immediately
             }
 
-            // --- Extract Function Calls (Adjust based on new SDK structure) ---
-            // Assuming function calls are now within response.candidates[0].content.parts
-            const functionCallParts = response.candidates?.[0]?.content?.parts?.filter((part: Part) => !!part.functionCall) ?? []; // Add Part type
-            const functionCalls = functionCallParts.map((part: Part) => part.functionCall).filter((fc: Part['functionCall'] | undefined): fc is NonNullable<Part['functionCall']> => !!fc); // Added explicit type to fc and used NonNullable
+            // Extract function calls from the response
+            const functionCallParts = response.candidates?.[0]?.content?.parts?.filter((part: Part) => !!part.functionCall) ?? [];
+            const functionCalls = functionCallParts.map((part: Part) => part.functionCall).filter((fc): fc is NonNullable<Part['functionCall']> => !!fc);
 
             if (functionCalls && functionCalls.length > 0) { // Check if the extracted array has calls
-                // --- Handle Function Call ---
-                console.log("DEBUG: Detected function call(s):", JSON.stringify(functionCalls, null, 2));
-                const functionCall = functionCalls[0]; // Handle first call
-                const toolName = functionCall.name;
-                const toolArgs = functionCall.args;
+                console.log("Function call(s) detected:", JSON.stringify(functionCalls, null, 2));
+                // Process the first function call to determine the primary tool name for response formatting,
+                // but iterate through all calls for execution.
+                const firstFunctionCall = functionCalls[0];
                 let toolExecutionResult: any;
 
-                if (!toolName) {
-                    console.error("Function call received without a name:", JSON.stringify(functionCall, null, 2));
+                if (!firstFunctionCall?.name) {
+                    console.error("Function call received without a name:", JSON.stringify(firstFunctionCall, null, 2));
+                    // Prepare an error response part to send back to the model
                     currentPrompt = [{ functionResponse: { name: "unknown_tool", response: { error: "Function call received without a tool name." } } }];
-                    continue; // Send error back to Gemini in next loop iteration
+                    continue; // Go to next loop iteration to send error back
                 }
 
-                try {
-                    console.log(`Executing tool '${toolName}' with args:`, toolArgs);
-                    toolExecutionResult = await callMcpToolViaSpawn(toolName, toolArgs);
-                    console.log(`DEBUG: Tool '${toolName}' executed successfully. Result:`, toolExecutionResult);
-                    currentPrompt = [{ functionResponse: { name: toolName, response: toolExecutionResult } }];
-                    continue; // Explicitly continue to next iteration
-                } catch (error: any) {
-                    console.error(`Error executing tool '${toolName}' via spawn:`, error);
-                    currentPrompt = [{ functionResponse: { name: toolName, response: { error: `Failed to execute tool: ${error.message}` } } }];
-                    continue; // Explicitly continue to next iteration even on error
-                }
-                // Continue loop to send function response back to Gemini
+                // Process all function calls requested by the model in this turn
+                const toolResponses: Part[] = [];
 
-            } else {
-                // --- Handle Text Response ---
+                for (const functionCall of functionCalls) {
+                    const requestedToolName = functionCall.name;
+                    const toolArgs = functionCall.args;
+                    let formattedResponsePart: Part;
+
+                    if (!requestedToolName) {
+                        console.error("Function call received without a name:", JSON.stringify(functionCall, null, 2));
+                        formattedResponsePart = formatToolResultForGemini("unknown_tool", { error: "Function call received without a tool name." });
+                    } else if (requestedToolName === "use_mcp_tool") {
+                        const { serverName, toolName: actualToolName, arguments: actualArgs } = toolArgs ?? {};
+
+                        if (!serverName || !actualToolName) {
+                            console.error("Missing serverName or toolName for use_mcp_tool:", toolArgs);
+                            formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: "Missing required parameters: serverName and/or toolName." });
+                        } else {
+                            console.log(`Attempting to execute MCP tool: Server='${serverName}', Tool='${actualToolName}', Args=`, actualArgs);
+
+                            const targetServerConfig = loadedMcpConfigs.find(s => s.id === serverName);
+
+                            if (!targetServerConfig) {
+                                console.error(`Configuration for server '${serverName}' not found.`);
+                                formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: `Configuration for server '${serverName}' not found.` });
+                            } else {
+                                // Check if the requested tool exists in the server's config
+                                const toolExists = targetServerConfig.tools.some(t => t.name === actualToolName);
+                                if (!toolExists) {
+                                    console.error(`Tool '${actualToolName}' not found in configuration for server '${serverName}'.`);
+                                    formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: `Tool '${actualToolName}' is not defined for server '${serverName}'.` });
+                                } else {
+                                    // Ensure actualToolName is a valid string before calling
+                                    if (typeof actualToolName !== 'string' || actualToolName === '') {
+                                        console.error(`Invalid tool name provided for server '${serverName}':`, actualToolName);
+                                        formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: `Invalid tool name provided.` });
+                                    } else {
+                                        try {
+                                            const toolResult = await executeMcpTool(targetServerConfig, actualToolName, (actualArgs ?? {}) as any); // Explicit cast
+                                            console.log(`executeMcpTool call successful for ${serverName}/${actualToolName}. Result:`, toolResult);
+                                            formattedResponsePart = formatToolResultForGemini(requestedToolName, toolResult);
+                                        } catch (error: any) {
+                                            console.error(`executeMcpTool call failed for ${serverName}/${actualToolName}: ${error.message}`, error);
+                                            formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: `Tool execution failed: ${error.message}` });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else { // Handle non-"use_mcp_tool" calls if any are defined
+                        // Handle potential non-MCP tools if any were defined in genericTools
+                        console.warn(`Received call for unhandled tool: ${requestedToolName}`);
+                        formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: `Tool '${requestedToolName}' is not implemented or recognized.` });
+                    }
+                    toolResponses.push(formattedResponsePart);
+                }
+                currentPrompt = toolResponses; // Prepare prompt for the next turn
+                continue; // Continue loop to send tool responses back
+
+            } else { // Handle case where Gemini returned a text response
+                // --- Handle Text Response (No Function Call) ---
                 const textParts = response.candidates?.[0]?.content?.parts?.filter((part: Part) => !!part.text) ?? [];
                 const replyText = textParts.map((part: Part) => part.text).join("");
 
-                if (replyText) {
-                    console.log("DEBUG: Final Gemini Text Response:", replyText);
+                if (replyText) { // Check if there's actual text content
+                    console.log("Final Gemini Text Response:", replyText);
                     const finalReply: Message = { sender: 'llm', text: replyText };
                     finalApiResponse = NextResponse.json({ reply: finalReply }, { status: 200 });
-                    // Return the successful text response immediately
-                    return finalApiResponse;
-                } else {
-                    // --- Handle No Text and No Function Call ---
+                    return finalApiResponse; // Exit loop and return text response
+                } else { // Should not happen if finishReason is STOP and no function call, but handle defensively
+                    // --- Handle No Text and No Function Call --- (Should ideally not happen with STOP reason)
                     console.warn(`Gemini response (Loop ${i + 1}) had no text or function calls.`);
                     const finishReason = response.candidates?.[0]?.finishReason;
-                    if (finishReason && finishReason !== 'STOP') { // Check if finishReason indicates an issue (anything other than STOP)
+                    if (finishReason && finishReason !== 'STOP') {
                         console.error(`Gemini response finished unexpectedly: ${finishReason}`);
                         finalApiResponse = NextResponse.json({ error: `LLM response finished unexpectedly: ${finishReason}` }, { status: 500 });
                     } else {
-                        // This might happen if the model just stops without output after a tool call, or has nothing more to say.
+                        // This case might occur if the model stops without output after a tool call, or has nothing more to say.
                         console.error('LLM returned empty or unexpected response structure:', response);
                         finalApiResponse = NextResponse.json({ error: 'LLM returned empty or unexpected response.' }, { status: 500 });
                     }
-                    // Return the error response immediately
-                    return finalApiResponse;
+                    return finalApiResponse; // Exit loop and return error
                 }
             }
 
-            console.log("DEBUG: Exited loop. Checking final response conditions..."); // ADDED LOG
-            // Return the final response determined in the loop
-            if (finalApiResponse) {
-                console.log("DEBUG: Returning finalApiResponse set within loop."); // ADDED LOG
-                return finalApiResponse;
-            }
-
-            // Handle cases where loop finished without a definitive response
+            // Fallback responses if the loop completes without setting finalApiResponse
             if (safetyAlert) {
-                console.log("DEBUG: Returning safety alert response."); // ADDED LOG
                 return NextResponse.json({ reply: { sender: 'llm', text: "I cannot provide a response due to safety concerns." } }, { status: 200 });
             } else {
-                // Max iterations reached
-                console.error("Maximum tool call loops reached without final text response.");
-                console.log("DEBUG: Returning max iterations/unexpected exit response."); // ADDED LOG
+                console.error("Maximum conversation loops reached without a final text response.");
                 return NextResponse.json({ error: 'Agent reached maximum interaction depth' }, { status: 500 });
             }
 

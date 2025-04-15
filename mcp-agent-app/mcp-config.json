@@ -1,0 +1,80 @@
+{
+    "servers": [
+        {
+            "id": "whatsapp",
+            "description": "Manages WhatsApp interactions (messages, contacts, chats).",
+            "command": {
+                "executableEnvVar": "UV_PATH",
+                "defaultExecutable": "uv",
+                "argsTemplate": [
+                    "run",
+                    "--directory",
+                    "{SCRIPT_DIR}",
+                    "main.py"
+                ],
+                "scriptDirEnvVar": "WHATSAPP_MCP_SCRIPT_DIR"
+            },
+            "tools": [
+                {
+                    "name": "send_message",
+                    "description": "Sends a message to a specified WhatsApp contact or group.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "recipient": {
+                                "type": "STRING",
+                                "description": "The phone number (with country code) or group JID."
+                            },
+                            "message": {
+                                "type": "STRING",
+                                "description": "The text message content."
+                            }
+                        },
+                        "required": [
+                            "recipient",
+                            "message"
+                        ]
+                    }
+                },
+                {
+                    "name": "list_chats",
+                    "description": "Lists available chats with metadata.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "limit": {
+                                "type": "NUMBER",
+                                "description": "Optional maximum number of chats."
+                            },
+                            "query": {
+                                "type": "STRING",
+                                "description": "Optional text to filter chats by name."
+                            }
+                        },
+                        "required": []
+                    }
+                },
+                {
+                    "name": "search_contacts",
+                    "description": "Searches for WhatsApp contacts.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "query": {
+                                "type": "STRING",
+                                "description": "Name or phone number fragment."
+                            },
+                            "limit": {
+                                "type": "NUMBER",
+                                "description": "Optional maximum number of contacts."
+                            }
+                        },
+                        "required": [
+                            "query"
+                        ]
+                    }
+                }
+            ]
+        }
+    ]
+}
