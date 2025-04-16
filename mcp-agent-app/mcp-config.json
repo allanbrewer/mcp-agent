@@ -17,17 +17,17 @@
             "tools": [
                 {
                     "name": "send_message",
-                    "description": "Sends a message to a specified WhatsApp contact or group.",
+                    "description": "Send a WhatsApp message to a person or group. For group chats use the JID.",
                     "parameters": {
                         "type": "OBJECT",
                         "properties": {
                             "recipient": {
                                 "type": "STRING",
-                                "description": "The phone number (with country code) or group JID."
+                                "description": "The recipient - either a phone number with country code but no + or other symbols, or a JID (e.g., \"123456789@s.whatsapp.net\" or a group JID like \"123456789@g.us\")"
                             },
                             "message": {
                                 "type": "STRING",
-                                "description": "The text message content."
+                                "description": "The message text to send"
                             }
                         },
                         "required": [
@@ -38,17 +38,29 @@
                 },
                 {
                     "name": "list_chats",
-                    "description": "Lists available chats with metadata.",
+                    "description": "Get WhatsApp chats matching specified criteria.",
                     "parameters": {
                         "type": "OBJECT",
                         "properties": {
-                            "limit": {
-                                "type": "NUMBER",
-                                "description": "Optional maximum number of chats."
-                            },
                             "query": {
                                 "type": "STRING",
-                                "description": "Optional text to filter chats by name."
+                                "description": "Optional search term to filter chats by name or JID"
+                            },
+                            "limit": {
+                                "type": "NUMBER",
+                                "description": "Maximum number of chats to return (default 20)"
+                            },
+                            "page": {
+                                "type": "NUMBER",
+                                "description": "Page number for pagination (default 0)"
+                            },
+                            "include_last_message": {
+                                "type": "BOOLEAN",
+                                "description": "Whether to include the last message in each chat (default True)"
+                            },
+                            "sort_by": {
+                                "type": "STRING",
+                                "description": "Field to sort results by, either \"last_active\" or \"name\" (default \"last_active\")"
                             }
                         },
                         "required": []
@@ -56,21 +68,230 @@
                 },
                 {
                     "name": "search_contacts",
-                    "description": "Searches for WhatsApp contacts.",
+                    "description": "Search WhatsApp contacts by name or phone number.",
                     "parameters": {
                         "type": "OBJECT",
                         "properties": {
                             "query": {
                                 "type": "STRING",
-                                "description": "Name or phone number fragment."
-                            },
-                            "limit": {
-                                "type": "NUMBER",
-                                "description": "Optional maximum number of contacts."
+                                "description": "Search term to match against contact names or phone numbers"
                             }
                         },
                         "required": [
                             "query"
+                        ]
+                    }
+                },
+                {
+                    "name": "list_messages",
+                    "description": "Get WhatsApp messages matching specified criteria with optional context.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "after": {
+                                "type": "STRING",
+                                "description": "Optional ISO-8601 formatted string to only return messages after this date"
+                            },
+                            "before": {
+                                "type": "STRING",
+                                "description": "Optional ISO-8601 formatted string to only return messages before this date"
+                            },
+                            "sender_phone_number": {
+                                "type": "STRING",
+                                "description": "Optional phone number to filter messages by sender"
+                            },
+                            "chat_jid": {
+                                "type": "STRING",
+                                "description": "Optional chat JID to filter messages by chat"
+                            },
+                            "query": {
+                                "type": "STRING",
+                                "description": "Optional search term to filter messages by content"
+                            },
+                            "limit": {
+                                "type": "NUMBER",
+                                "description": "Maximum number of messages to return (default 20)"
+                            },
+                            "page": {
+                                "type": "NUMBER",
+                                "description": "Page number for pagination (default 0)"
+                            },
+                            "include_context": {
+                                "type": "BOOLEAN",
+                                "description": "Whether to include messages before and after matches (default True)"
+                            },
+                            "context_before": {
+                                "type": "NUMBER",
+                                "description": "Number of messages to include before each match (default 1)"
+                            },
+                            "context_after": {
+                                "type": "NUMBER",
+                                "description": "Number of messages to include after each match (default 1)"
+                            }
+                        },
+                        "required": []
+                    }
+                },
+                {
+                    "name": "get_chat",
+                    "description": "Get WhatsApp chat metadata by JID.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "chat_jid": {
+                                "type": "STRING",
+                                "description": "The JID of the chat to retrieve"
+                            },
+                            "include_last_message": {
+                                "type": "BOOLEAN",
+                                "description": "Whether to include the last message (default True)"
+                            }
+                        },
+                        "required": [
+                            "chat_jid"
+                        ]
+                    }
+                },
+                {
+                    "name": "get_direct_chat_by_contact",
+                    "description": "Get WhatsApp chat metadata by sender phone number.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "sender_phone_number": {
+                                "type": "STRING",
+                                "description": "The phone number to search for"
+                            }
+                        },
+                        "required": [
+                            "sender_phone_number"
+                        ]
+                    }
+                },
+                {
+                    "name": "get_contact_chats",
+                    "description": "Get all WhatsApp chats involving the contact.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "jid": {
+                                "type": "STRING",
+                                "description": "The contact's JID to search for"
+                            },
+                            "limit": {
+                                "type": "NUMBER",
+                                "description": "Maximum number of chats to return (default 20)"
+                            },
+                            "page": {
+                                "type": "NUMBER",
+                                "description": "Page number for pagination (default 0)"
+                            }
+                        },
+                        "required": [
+                            "jid"
+                        ]
+                    }
+                },
+                {
+                    "name": "get_last_interaction",
+                    "description": "Get most recent WhatsApp message involving the contact.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "jid": {
+                                "type": "STRING",
+                                "description": "The JID of the contact to search for"
+                            }
+                        },
+                        "required": [
+                            "jid"
+                        ]
+                    }
+                },
+                {
+                    "name": "get_message_context",
+                    "description": "Get context around a specific WhatsApp message.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "message_id": {
+                                "type": "STRING",
+                                "description": "The ID of the message to get context for"
+                            },
+                            "before": {
+                                "type": "NUMBER",
+                                "description": "Number of messages to include before the target message (default 5)"
+                            },
+                            "after": {
+                                "type": "NUMBER",
+                                "description": "Number of messages to include after the target message (default 5)"
+                            }
+                        },
+                        "required": [
+                            "message_id"
+                        ]
+                    }
+                },
+                {
+                    "name": "send_file",
+                    "description": "Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "recipient": {
+                                "type": "STRING",
+                                "description": "The recipient - either a phone number with country code but no + or other symbols, or a JID (e.g., \"123456789@s.whatsapp.net\" or a group JID like \"123456789@g.us\")"
+                            },
+                            "media_path": {
+                                "type": "STRING",
+                                "description": "The absolute path to the media file to send (image, video, document)"
+                            }
+                        },
+                        "required": [
+                            "recipient",
+                            "media_path"
+                        ]
+                    }
+                },
+                {
+                    "name": "send_audio_message",
+                    "description": "Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID. If it errors due to ffmpeg not being installed, use send_file instead.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "recipient": {
+                                "type": "STRING",
+                                "description": "The recipient - either a phone number with country code but no + or other symbols, or a JID (e.g., \"123456789@s.whatsapp.net\" or a group JID like \"123456789@g.us\")"
+                            },
+                            "media_path": {
+                                "type": "STRING",
+                                "description": "The absolute path to the audio file to send (will be converted to Opus .ogg if it's not a .ogg file)"
+                            }
+                        },
+                        "required": [
+                            "recipient",
+                            "media_path"
+                        ]
+                    }
+                },
+                {
+                    "name": "download_media",
+                    "description": "Download media from a WhatsApp message and get the local file path.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "message_id": {
+                                "type": "STRING",
+                                "description": "The ID of the message containing the media"
+                            },
+                            "chat_jid": {
+                                "type": "STRING",
+                                "description": "The JID of the chat containing the message"
+                            }
+                        },
+                        "required": [
+                            "message_id",
+                            "chat_jid"
                         ]
                     }
                 }
