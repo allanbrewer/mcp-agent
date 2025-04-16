@@ -104,8 +104,35 @@ const mapMessagesToGemini = (messages: Message[]): Content[] => {
     }));
 };
 
+// --- Intent Detection ---
+function detectRelevantServers(prompt: string, config: McpConfig): string[] {
+    const relevantIds: string[] = [];
+    const lowerCasePrompt = prompt.toLowerCase();
+
+    // Simple keyword spotting
+    if (lowerCasePrompt.includes("whatsapp")) {
+        // Check if a server with id 'whatsapp' actually exists in config
+        if (config.servers.some(s => s.id === 'whatsapp')) {
+            relevantIds.push('whatsapp');
+        }
+    }
+    if (lowerCasePrompt.includes("github") || lowerCasePrompt.includes("issue") || lowerCasePrompt.includes("repo") || lowerCasePrompt.includes("pull request") || lowerCasePrompt.includes("pr")) {
+        // Check if a server with id 'github' actually exists in config
+        if (config.servers.some(s => s.id === 'github')) {
+            // Avoid duplicates
+            if (!relevantIds.includes('github')) {
+                relevantIds.push('github');
+            }
+        }
+    }
+
+    console.log(`Detected relevant servers for prompt: ${relevantIds.join(', ')}`);
+    return relevantIds;
+}
+// --- End Intent Detection ---
+
 // Helper function to generate the dynamic system prompt based on MCP config
-function generateSystemPrompt(config: McpConfig): string {
+function generateSystemPrompt(config: McpConfig, relevantServerIds: string[]): string {
     // Start with the base instructions
     let prompt = `${baseSystemPrompt}`; // baseSystemPrompt already includes intro to use_mcp_tool
 
@@ -119,37 +146,44 @@ function generateSystemPrompt(config: McpConfig): string {
     prompt += `      - arguments (object, required): The arguments required by the specific tool, provided as a JSON object.\n`;
 
 
-    // Add details about available servers and their specific tools
-    prompt += `\nAVAILABLE MCP SERVERS AND SPECIFIC TOOLS:\n`;
+    // Only add details about relevant servers if any were identified
+    if (relevantServerIds.length > 0) {
+        prompt += `\n\nRELEVANT MCP SERVERS AND SPECIFIC TOOLS (based on prompt keywords):\n`;
 
-    if (!config || !config.servers || config.servers.length === 0) {
-        prompt += "\nNo MCP servers are configured or loaded. External tools unavailable.";
-        return prompt;
-    }
+        const relevantServers = config.servers.filter(server => relevantServerIds.includes(server.id));
 
-    config.servers.forEach(server => {
-        prompt += `\nServer ID: ${server.id}\n  Description: ${server.description || 'No description provided.'}\n  Tools:\n`;
-        if (server.tools && server.tools.length > 0) {
-            server.tools.forEach(tool => {
-                prompt += `    - Tool Name: ${tool.name}\n      Description: ${tool.description || 'No description provided.'}\n`;
-                // Include parameter details in the prompt
-                if (tool.parameters && tool.parameters.properties) {
-                    prompt += `      Parameters:\n`;
-                    Object.entries(tool.parameters.properties).forEach(([paramName, paramDetails]) => {
-                        const required = tool.parameters.required?.includes(paramName) ? 'required' : 'optional';
-                        prompt += `        - ${paramName} (${paramDetails.type}, ${required}): ${paramDetails.description || ''}\n`;
+        if (relevantServers.length === 0) {
+            // This case handles if keywords were detected but no matching server config exists
+            prompt += "\nNo matching configured servers found for the detected keywords.";
+        } else {
+            relevantServers.forEach(server => {
+                prompt += `\nServer ID: ${server.id}\n  Description: ${server.description || 'No description provided.'}\n  Tools:\n`;
+                if (server.tools && server.tools.length > 0) {
+                    server.tools.forEach(tool => {
+                        prompt += `    - Tool Name: ${tool.name}\n      Description: ${tool.description || 'No description provided.'}\n`;
+                        // Include parameter details in the prompt
+                        if (tool.parameters && tool.parameters.properties) {
+                            prompt += `      Parameters:\n`;
+                            Object.entries(tool.parameters.properties).forEach(([paramName, paramDetails]) => {
+                                const required = tool.parameters.required?.includes(paramName) ? 'required' : 'optional';
+                                prompt += `        - ${paramName} (${paramDetails.type}, ${required}): ${paramDetails.description || ''}\n`;
+                            });
+                        } else {
+                            prompt += `      (No parameters defined)\n`;
+                        }
                     });
                 } else {
-                    prompt += `      (No parameters defined)\n`;
+                    prompt += "    (No tools defined for this server in the configuration)\n";
                 }
             });
-        } else {
-            prompt += "    (No tools defined for this server in the configuration)\n";
+            prompt += "\n\nTo use a relevant tool, call 'use_mcp_tool' with the correct 'serverName', 'toolName', and the required 'arguments' object based on the server and tool descriptions above.";
         }
-    });
+    } else {
+        // If no relevant servers, add a note clarifying only generic usage is described.
+        prompt += "\n\nNo specific external tools seem relevant based on your prompt. You can still try using 'use_mcp_tool' if you know the server and tool name.";
+    }
 
-    prompt += "\n\nTo use a tool, call 'use_mcp_tool' with the correct 'serverName', 'toolName', and the required 'arguments' object based on the server and tool descriptions above.";
-    return prompt;
+    return prompt; // Return the constructed prompt
 }
 
 // Define the *single* generic MCP tool for Gemini Function Calling as per instructions
@@ -201,47 +235,75 @@ const formatToolResultForGemini = (toolName: string, result: any): Part => {
 async function executeMcpTool(serverConfig: McpServerConfig, toolName: string, toolArgs: any): Promise<any> {
     return new Promise((resolve, reject) => {
         const { command: commandConfig } = serverConfig;
+        let command: string;
+        let args: string[];
+        const childEnv = { ...process.env }; // Start with current environment
 
-        // --- Process Spawning Logic (mostly unchanged) ---
-        const executable = process.env[commandConfig.executableEnvVar || ''] || commandConfig.defaultExecutable;
-        if (!executable) {
-            return reject(new Error(`Could not determine executable for MCP server ${serverConfig.id}. Checked env var '${commandConfig.executableEnvVar}' and default '${commandConfig.defaultExecutable}'.`));
-        }
-        let scriptDir: string | undefined = undefined;
-        if (commandConfig.scriptDirEnvVar) {
-            scriptDir = process.env[commandConfig.scriptDirEnvVar];
-            if (!scriptDir) {
-                return reject(new Error(`Environment variable '${commandConfig.scriptDirEnvVar}' required for MCP server ${serverConfig.id} script directory is not set.`));
+        // --- Determine Command and Arguments based on Server ID ---
+        if (serverConfig.id === 'whatsapp') {
+            const uvPath = process.env[commandConfig.executableEnvVar || 'UV_PATH'] || commandConfig.defaultExecutable;
+            if (!uvPath) {
+                return reject(new Error(`Could not determine executable for MCP server ${serverConfig.id}. Checked env var '${commandConfig.executableEnvVar}' and default '${commandConfig.defaultExecutable}'.`));
             }
-        }
-        const args = commandConfig.argsTemplate.map(arg => {
-            if (arg === '{SCRIPT_DIR}') {
-                if (!scriptDir) {
-                    reject(new Error(`Argument template for ${serverConfig.id} requires {SCRIPT_DIR}, but no script directory is configured or found.`));
-                    return '';
+            const scriptDirEnvVar = commandConfig.scriptDirEnvVar || ''; // Default to empty string if not set
+            const scriptDir = process.env[scriptDirEnvVar];
+            if (scriptDirEnvVar && !scriptDir) { // Only require scriptDir if scriptDirEnvVar is specified in config
+                return reject(new Error(`Environment variable '${scriptDirEnvVar}' required for MCP server ${serverConfig.id} script directory is not set.`));
+            }
+
+            command = uvPath;
+            args = commandConfig.argsTemplate.map(arg => {
+                if (arg === '{SCRIPT_DIR}') {
+                    if (!scriptDir) {
+                        // This should ideally not happen due to the check above, but safeguard anyway
+                        reject(new Error(`Argument template for ${serverConfig.id} requires {SCRIPT_DIR}, but no script directory is configured or found.`));
+                        return ''; // Return empty string to be filtered later
+                    }
+                    return scriptDir;
                 }
-                return scriptDir;
+                return arg;
+            }).filter(arg => arg !== ''); // Filter out empty strings resulting from missing scriptDir
+
+            // Check if filtering removed an essential arg
+            if (commandConfig.argsTemplate.includes('{SCRIPT_DIR}') && args.length !== commandConfig.argsTemplate.length) {
+                // Reject was already called inside map, but ensure promise is rejected if map didn't throw
+                return reject(new Error(`Failed to substitute {SCRIPT_DIR} in args for ${serverConfig.id}.`));
             }
-            return arg;
-        }).filter(arg => arg !== '');
-        if (args.length !== commandConfig.argsTemplate.length && commandConfig.argsTemplate.includes('{SCRIPT_DIR}') && !scriptDir) {
-            return;
+
+        } else if (serverConfig.id === 'github') {
+            const githubPat = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+            if (!githubPat) {
+                // Explicitly check for the required PAT for GitHub
+                return reject(new Error("Missing GITHUB_PERSONAL_ACCESS_TOKEN environment variable for GitHub server."));
+            }
+            command = commandConfig.defaultExecutable; // Should be "docker"
+            // Replace placeholder in argsTemplate with actual token
+            args = commandConfig.argsTemplate.map(arg => arg.replace('{GITHUB_PAT}', githubPat));
+
+        } else {
+            return reject(new Error(`Unsupported MCP server ID: ${serverConfig.id}`));
         }
-        console.log(`Spawning MCP process: ${executable} ${args.join(' ')}`);
-        const childEnv = { ...process.env };
+
+        // --- Pass Thru Environment Variables ---
+        // Check and pass specified env vars from config if they exist in the current environment
         if (commandConfig.envVars) {
-            commandConfig.envVars.forEach(envVarName => {
+            for (const envVarName of commandConfig.envVars) {
                 const value = process.env[envVarName];
-                if (value !== undefined) {
-                    childEnv[envVarName] = value;
-                } else {
-                    console.warn(`Optional environment variable '${envVarName}' for MCP server ${serverConfig.id} not found.`);
+                if (value === undefined) {
+                    // Throw error if an env var listed in the config is missing
+                    return reject(new Error(`Required environment variable '${envVarName}' for MCP server ${serverConfig.id} is not set.`));
                 }
-            });
+                childEnv[envVarName] = value; // Add it to the child process environment
+            }
         }
-        const childProcess = spawn(executable, args, {
+        // --- End Environment Variable Handling ---
+
+
+        console.log(`Spawning MCP process: ${command} ${args.join(' ')}`);
+        // Spawn the process with determined command, args, and environment
+        const childProcess = spawn(command, args, {
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: childEnv,
+            env: childEnv, // Use the constructed environment
         });
         // --- End Process Spawning Logic ---
 
@@ -377,7 +439,7 @@ async function executeMcpTool(serverConfig: McpServerConfig, toolName: string, t
         // Handle spawn errors
         childProcess.on('error', (error) => {
             console.error(`MCP Server (${serverConfig.id}) spawn error:`, error);
-            cleanup(new Error(`Failed to spawn MCP process '${executable}': ${error.message}`));
+            cleanup(new Error(`Failed to spawn MCP process '${command}': ${error.message}`));
         });
 
         // Handle process exit
@@ -484,7 +546,11 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'Cannot start chat with empty mapped messages' }, { status: 400 });
         }
 
-        const latestMessage = mappedMessages[mappedMessages.length - 1];
+        // Get the original text from the latest user message in the request body
+        const latestUserMessage = messages[messages.length - 1];
+        const promptText = latestUserMessage.text;
+
+        const latestMessage = mappedMessages[mappedMessages.length - 1]; // Keep this for chat history logic
         let chatHistoryForStart = mappedMessages.slice(0, -1);
 
         // Prepare history for startChat: Ensure it starts with 'user' or is empty.
@@ -497,8 +563,11 @@ export async function POST(request: Request) {
             }
         }
 
-        // Generate the dynamic system prompt using the helper function
-        const dynamicSystemPrompt = generateSystemPrompt(mcpConfig);
+        // Detect relevant servers based on the prompt
+        const relevantServerIds = detectRelevantServers(promptText, mcpConfig);
+
+        // Generate the dynamic system prompt using the helper function and relevant server IDs
+        const dynamicSystemPrompt = generateSystemPrompt(mcpConfig, relevantServerIds);
         console.log("Using Dynamic System Prompt:", dynamicSystemPrompt); // Keep log for debugging
 
         // Create the system instruction object for Gemini
