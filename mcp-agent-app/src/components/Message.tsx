@@ -40,12 +40,8 @@ const Message: React.FC<MessageProps> = ({ sender, text }) => {
         pre: ({ node, ...props }: any) => <pre className="bg-gray-200 dark:bg-gray-900 p-3 rounded my-2 whitespace-pre-wrap break-words text-sm font-mono text-gray-800 dark:text-gray-200" {...props} />,
         code: ({ node, inline, className, children, ...props }: any) => {
             const match = /language-(\w+)/.exec(className || '');
-            return !inline ? (
-                <code className={`block ${className || ''}`} {...props}>
-                    {children}
-                </code>
-            ) : (
-                <code className={`inline text-sm font-mono bg-gray-200 dark:bg-gray-700 rounded px-1 py-0.5 ${className || ''}`} {...props}>
+            return (
+                <code className={`blocktext-sm ${className || ''}`} {...props}>
                     {children}
                 </code>
             );
