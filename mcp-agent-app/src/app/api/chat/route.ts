@@ -1,5 +1,6 @@
+
 import { randomUUID } from 'crypto';
-import { NextResponse } from 'next/server';
+import { NextResponse, NextRequest } from 'next/server'; // Added NextRequest
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process'; // Added ChildProcessWithoutNullStreams
 import { GoogleGenAI, HarmCategory, HarmBlockThreshold, Content, Part, FunctionDeclaration, Tool, FunctionCallingConfigMode, Type } from '@google/genai';
 import { JSONRPCClient, JSONRPCRequest } from 'json-rpc-2.0'; // Added
@@ -652,216 +653,266 @@ async function executeMcpTool(serverConfig: McpServerConfig, toolName: string, t
     }); // End of Promise constructor
 }
 
-export async function POST(request: Request) {
-    try {
-        const mcpConfig = await loadMcpConfig(); // Load MCP config
-        const body: RequestBody = await request.json();
-        const { messages } = body;
+// Helper to format data for SSE
+const formatSseMessage = (type: string, data: any): string => {
+    return `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+};
 
-        if (!messages || messages.length === 0) {
-            return NextResponse.json({ error: 'No messages provided' }, { status: 400 });
-        }
-
-        const mappedMessages = mapMessagesToGemini(messages);
-
-        if (mappedMessages.length === 0) {
-            return NextResponse.json({ error: 'Cannot start chat with empty mapped messages' }, { status: 400 });
-        }
-
-        // Get the original text from the latest user message in the request body
-        const latestUserMessage = messages[messages.length - 1];
-        const promptText = latestUserMessage.text;
-
-        const latestMessage = mappedMessages[mappedMessages.length - 1]; // Keep this for chat history logic
-        let chatHistoryForStart = mappedMessages.slice(0, -1);
-
-        // Prepare history for startChat: Ensure it starts with 'user' or is empty.
-        if (chatHistoryForStart.length > 0 && chatHistoryForStart[0].role === 'model') {
-            const firstUserIndex = chatHistoryForStart.findIndex(msg => msg.role === 'user');
-            if (firstUserIndex !== -1) {
-                chatHistoryForStart = chatHistoryForStart.slice(firstUserIndex);
-            } else {
-                chatHistoryForStart = [];
-            }
-        }
-
-        // Detect relevant servers based on the prompt
-        const relevantServerIds = detectRelevantServers(promptText, mcpConfig);
-
-        // Generate the dynamic system prompt using the helper function and relevant server IDs
-        const dynamicSystemPrompt = generateSystemPrompt(mcpConfig, relevantServerIds);
-        console.log("Using Dynamic System Prompt:", dynamicSystemPrompt); // Keep log for debugging
-
-        // Create the system instruction object for Gemini
-        const systemInstruction: Content = { role: 'system', parts: [{ text: dynamicSystemPrompt }] }; // Use 'system' role for system instructions
-
-        const chat = genAI.chats.create({
-            model: "gemini-2.0-flash-001",
-            history: chatHistoryForStart,
-            config: {
-                ...generationConfig,
-                safetySettings,
-                tools: tools, // Use the renamed 'tools' constant
-                systemInstruction: systemInstruction,
-                // toolConfig: { functionCallingConfig: { mode: FunctionCallingConfigMode.ANY } } // Consider ANY mode if AUTO struggles with tool calls
-            }
-        });
-
-        // --- Start Conversation Loop ---
-        let currentPrompt: string | Part[] = latestMessage.parts ?? [];
-        let safetyAlert = false;
-
-        // Limit conversation turns to prevent infinite loops or excessive cost
-        for (let i = 0; i < 5; i++) {
-            console.log(`--- Loop ${i + 1}: Sending to Gemini ---`);
-            const result = await chat.sendMessage({ message: currentPrompt });
-            const response = result; // Use the result object directly
-
-            // console.log(`DEBUG: Raw Gemini Response (Loop ${i + 1}):`, JSON.stringify(response, null, 2));
-
-            // --- Response Validation and Safety Checks ---
-            if (!response.candidates || response.candidates.length === 0) {
-                console.error('Gemini API response missing candidates:', response);
-                if (response.promptFeedback?.blockReason) {
-                    console.warn(`Prompt blocked due to ${response.promptFeedback.blockReason}`);
-                    safetyAlert = true;
-                    return NextResponse.json({ reply: { sender: 'llm', text: `Prompt blocked due to ${response.promptFeedback.blockReason}` } }, { status: 200 });
+export async function POST(request: NextRequest) {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+        async start(controller) {
+            const enqueue = (type: string, data: any) => {
+                try {
+                    controller.enqueue(encoder.encode(formatSseMessage(type, data)));
+                } catch (e) {
+                    console.error("Error encoding/enqueuing SSE message:", e);
+                    // Optionally close stream here if encoding fails critically
                 }
-                return NextResponse.json({ error: 'LLM returned no candidates or unexpected response structure' }, { status: 500 });
-            }
+            };
 
-            if (response.promptFeedback?.blockReason || response.candidates?.[0]?.finishReason === 'SAFETY') {
-                console.warn("Gemini response blocked due to safety settings.");
-                safetyAlert = true;
-                return NextResponse.json({ reply: { sender: 'llm', text: "Response blocked by safety settings." } }, { status: 200 });
-            }
+            try {
+                const mcpConfig = await loadMcpConfig(); // Load MCP config
+                const body: RequestBody = await request.json();
+                const { messages } = body;
 
-            // --- Function Call Handling ---
-            const functionCallParts = response.candidates?.[0]?.content?.parts?.filter((part: Part) => !!part.functionCall) ?? [];
-            const functionCalls = functionCallParts.map((part: Part) => part.functionCall).filter((fc): fc is NonNullable<Part['functionCall']> => !!fc);
+                if (!messages || messages.length === 0) {
+                    enqueue('error', { message: 'No messages provided' });
+                    controller.close();
+                    return;
+                }
 
-            if (functionCalls.length > 0) {
-                console.log("Function call(s) detected:", JSON.stringify(functionCalls, null, 2));
-                const toolResponses: Part[] = [];
+                const mappedMessages = mapMessagesToGemini(messages);
 
-                // Process all function calls requested in this turn
-                for (const functionCall of functionCalls) {
-                    const requestedToolName = functionCall.name;
-                    const toolArgs = functionCall.args;
-                    let formattedResponsePart: Part;
+                if (mappedMessages.length === 0) {
+                    enqueue('error', { message: 'Cannot start chat with empty mapped messages' });
+                    controller.close();
+                    return;
+                }
 
-                    if (!requestedToolName) {
-                        console.error("Function call received without a name:", JSON.stringify(functionCall, null, 2));
-                        formattedResponsePart = formatToolResultForGemini("unknown_tool", { error: "Function call received without a tool name." });
-                    } else if (requestedToolName === "use_mcp_tool") {
-                        // Extract MCP tool details
-                        const { serverName, toolName: actualToolName, arguments: actualArgs } = toolArgs ?? {};
+                // Get the original text from the latest user message in the request body
+                const latestUserMessage = messages[messages.length - 1];
+                const promptText = latestUserMessage.text;
 
-                        if (!serverName || !actualToolName) {
-                            console.error("Missing serverName or toolName for use_mcp_tool:", toolArgs);
-                            formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: "Missing required parameters: serverName and/or toolName." });
-                        } else {
-                            console.log(`Attempting to execute MCP tool: Server='${serverName}', Tool='${actualToolName}', Args=`, actualArgs);
-                            // Find the server config using the loaded mcpConfig
-                            const serverConfig = mcpConfig.servers.find(s => s.id === serverName);
+                const latestMessage = mappedMessages[mappedMessages.length - 1]; // Keep this for chat history logic
+                let chatHistoryForStart = mappedMessages.slice(0, -1);
 
-                            if (!serverConfig) {
-                                console.error(`MCP Server config not found for ID: ${serverName}`);
-                                formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: `Configuration for MCP server '${serverName}' not found.` });
-                            } else {
-                                // Check if the specific tool exists within the found server config
-                                const toolExists = serverConfig.tools.some(t => t.name === actualToolName);
-                                if (!toolExists) {
-                                    console.error(`Tool '${actualToolName}' not found in configuration for server '${serverName}'.`);
-                                    formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: `Tool '${actualToolName}' is not defined for server '${serverName}'.` });
-                                } else if (typeof actualToolName !== 'string' || actualToolName === '') {
-                                    // Validate tool name type/value before execution
-                                    console.error(`Invalid tool name provided for server '${serverName}':`, actualToolName);
-                                    formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: `Invalid tool name provided.` });
-                                } else {
-                                    // Execute the tool using the found serverConfig
-                                    try {
-                                        const toolResult = await executeMcpTool(serverConfig, actualToolName, (actualArgs ?? {}) as any);
-                                        console.log(`executeMcpTool call successful for ${serverName}/${actualToolName}. Result:`, toolResult);
-                                        // Ensure the response part uses the generic tool name 'use_mcp_tool'
-                                        // and the result is wrapped correctly as per instruction #4
-                                        formattedResponsePart = {
-                                            functionResponse: {
-                                                name: "use_mcp_tool", // Use the generic tool name
-                                                response: { content: toolResult }, // Wrap result in 'content'
-                                            },
-                                        };
-                                    } catch (error: any) {
-                                        console.error(`executeMcpTool call failed for ${serverName}/${actualToolName}: ${error.message}`, error);
-                                        // Ensure the error response part also uses the generic tool name
-                                        // and the error is wrapped correctly
-                                        formattedResponsePart = {
-                                            functionResponse: {
-                                                name: "use_mcp_tool", // Use the generic tool name
-                                                response: { content: { error: `Tool execution failed: ${error.message}` } }, // Wrap error in 'content'
-                                            },
-                                        };
-                                    }
-                                }
+                // Prepare history for startChat: Ensure it starts with 'user' or is empty.
+                if (chatHistoryForStart.length > 0 && chatHistoryForStart[0].role === 'model') {
+                    const firstUserIndex = chatHistoryForStart.findIndex(msg => msg.role === 'user');
+                    if (firstUserIndex !== -1) {
+                        chatHistoryForStart = chatHistoryForStart.slice(firstUserIndex);
+                    } else {
+                        chatHistoryForStart = [];
+                    }
+                }
+
+                // Detect relevant servers based on the prompt
+                const relevantServerIds = detectRelevantServers(promptText, mcpConfig);
+
+                // Generate the dynamic system prompt using the helper function and relevant server IDs
+                const dynamicSystemPrompt = generateSystemPrompt(mcpConfig, relevantServerIds);
+                console.log("Using Dynamic System Prompt:", dynamicSystemPrompt); // Keep log for debugging
+
+                // Create the system instruction object for Gemini
+                const systemInstruction: Content = { role: 'system', parts: [{ text: dynamicSystemPrompt }] }; // Use 'system' role for system instructions
+
+                const chat = genAI.chats.create({
+                    model: "gemini-2.0-flash-001",
+                    history: chatHistoryForStart,
+                    config: {
+                        ...generationConfig,
+                        safetySettings,
+                        tools: tools, // Use the renamed 'tools' constant
+                        systemInstruction: systemInstruction,
+                        // toolConfig: { functionCallingConfig: { mode: FunctionCallingConfigMode.ANY } } // Consider ANY mode if AUTO struggles with tool calls
+                    }
+                });
+
+                // --- Start Conversation Loop ---
+                let currentPrompt: string | Part[] = latestMessage.parts ?? [];
+                let safetyAlert = false;
+
+                // Limit conversation turns to prevent infinite loops or excessive cost
+                for (let i = 0; i < 5; i++) {
+                    console.log(`--- Loop ${i + 1}: Sending to Gemini ---`);
+                    enqueue('status', { message: `Thinking... (Turn ${i + 1})` });
+
+                    // Use sendMessageStream
+                    const resultStream = await chat.sendMessageStream({ message: currentPrompt });
+
+                    let accumulatedText = ""; // Accumulate text chunks for this turn
+                    let functionCallDetected = false;
+                    const toolResponses: Part[] = []; // Store tool responses for this turn
+
+                    // Process the stream
+                    for await (const response of resultStream) {
+                        // --- Response Validation and Safety Checks ---
+                        if (!response.candidates || response.candidates.length === 0) {
+                            console.error('Gemini API stream response missing candidates:', response);
+                            if (response.promptFeedback?.blockReason) {
+                                console.warn(`Prompt blocked due to ${response.promptFeedback.blockReason}`);
+                                safetyAlert = true;
+                                enqueue('error', { message: `Prompt blocked due to ${response.promptFeedback.blockReason}` });
+                                controller.close(); return;
                             }
+                            enqueue('error', { message: 'LLM returned no candidates or unexpected response structure' });
+                            controller.close(); return;
                         }
+
+                        if (response.promptFeedback?.blockReason || response.candidates?.[0]?.finishReason === 'SAFETY') {
+                            console.warn("Gemini response blocked due to safety settings.");
+                            safetyAlert = true;
+                            enqueue('error', { message: "Response blocked by safety settings." });
+                            controller.close(); return;
+                        }
+
+                        // --- Function Call Handling ---
+                        const functionCallParts = response.candidates?.[0]?.content?.parts?.filter((part: Part) => !!part.functionCall) ?? [];
+                        const functionCalls = functionCallParts.map((part: Part) => part.functionCall).filter((fc): fc is NonNullable<Part['functionCall']> => !!fc);
+
+                        if (functionCalls.length > 0) {
+                            functionCallDetected = true; // Mark that a function call happened in this stream response
+                            console.log("Function call(s) detected in stream:", JSON.stringify(functionCalls, null, 2));
+
+                            // Process all function calls requested in this chunk (usually just one per chunk)
+                            for (const functionCall of functionCalls) {
+                                const requestedToolName = functionCall.name;
+                                const toolArgs = functionCall.args;
+                                let formattedResponsePart: Part;
+
+                                if (!requestedToolName) {
+                                    console.error("Function call received without a name:", JSON.stringify(functionCall, null, 2));
+                                    formattedResponsePart = formatToolResultForGemini("unknown_tool", { error: "Function call received without a tool name." });
+                                } else if (requestedToolName === "use_mcp_tool") {
+                                    const { serverName, toolName: actualToolName, arguments: actualArgs } = toolArgs ?? {};
+
+                                    if (!serverName || !actualToolName) {
+                                        console.error("Missing serverName or toolName for use_mcp_tool:", toolArgs);
+                                        formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: "Missing required parameters: serverName and/or toolName." });
+                                    } else {
+                                        enqueue('log', { message: `Executing tool: ${serverName}/${actualToolName}...` });
+                                        console.log(`Attempting to execute MCP tool: Server='${serverName}', Tool='${actualToolName}', Args=`, actualArgs);
+                                        const serverConfig = mcpConfig.servers.find(s => s.id === serverName);
+
+                                        if (!serverConfig) {
+                                            console.error(`MCP Server config not found for ID: ${serverName}`);
+                                            formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: `Configuration for MCP server '${serverName}' not found.` });
+                                            enqueue('error', { message: `Configuration for MCP server '${serverName}' not found.` });
+                                        } else {
+                                            const toolExists = serverConfig.tools.some(t => t.name === actualToolName);
+                                            if (!toolExists) {
+                                                console.error(`Tool '${actualToolName}' not found in configuration for server '${serverName}'.`);
+                                                formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: `Tool '${actualToolName}' is not defined for server '${serverName}'.` });
+                                                enqueue('error', { message: `Tool '${actualToolName}' is not defined for server '${serverName}'.` });
+                                            } else if (typeof actualToolName !== 'string' || actualToolName === '') {
+                                                console.error(`Invalid tool name provided for server '${serverName}':`, actualToolName);
+                                                formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: `Invalid tool name provided.` });
+                                                enqueue('error', { message: `Invalid tool name provided.` });
+                                            } else {
+                                                try {
+                                                    const toolResult = await executeMcpTool(serverConfig, actualToolName, (actualArgs ?? {}) as any);
+                                                    console.log(`executeMcpTool call successful for ${serverName}/${actualToolName}. Result:`, toolResult);
+                                                    enqueue('log', { message: `Tool ${serverName}/${actualToolName} executed successfully.` });
+                                                    formattedResponsePart = {
+                                                        functionResponse: {
+                                                            name: "use_mcp_tool",
+                                                            response: { content: toolResult },
+                                                        },
+                                                    };
+                                                } catch (error: any) {
+                                                    console.error(`executeMcpTool call failed for ${serverName}/${actualToolName}: ${error.message}`, error);
+                                                    enqueue('error', { message: `Tool execution failed: ${error.message}` });
+                                                    formattedResponsePart = {
+                                                        functionResponse: {
+                                                            name: "use_mcp_tool",
+                                                            response: { content: { error: `Tool execution failed: ${error.message}` } },
+                                                        },
+                                                    };
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    console.warn(`Received call for unhandled tool: ${requestedToolName}`);
+                                    enqueue('log', { message: `Warning: Received call for unhandled tool: ${requestedToolName}` });
+                                    formattedResponsePart = {
+                                        functionResponse: {
+                                            name: "use_mcp_tool",
+                                            response: { content: { error: `Tool '${requestedToolName}' is not implemented or recognized.` } },
+                                        },
+                                    };
+                                }
+                                toolResponses.push(formattedResponsePart);
+                            } // End loop over functionCalls in this chunk
+                        } // End if functionCalls.length > 0
+
+                        // --- Text Chunk Handling ---
+                        const textParts = response.candidates?.[0]?.content?.parts?.filter((part: Part) => !!part.text) ?? [];
+                        const chunkText = textParts.map((part: Part) => part.text).join("");
+
+                        if (chunkText) {
+                            accumulatedText += chunkText;
+                            enqueue('llm_chunk', { text: chunkText }); // Stream the chunk
+                        }
+
+                    } // End for await...of loop for stream chunks
+
+                    // --- After processing the entire stream for this turn ---
+                    if (functionCallDetected) {
+                        // If function calls happened, prepare for the next loop iteration
+                        currentPrompt = toolResponses; // Send responses back to Gemini
+                        continue; // Go to the next loop iteration
                     } else {
-                        // Handle other potential non-MCP tools if defined
-                        console.warn(`Received call for unhandled tool: ${requestedToolName}`);
-                        // Ensure unhandled tool response uses the generic tool name
-                        formattedResponsePart = {
-                            functionResponse: {
-                                name: "use_mcp_tool", // Use the generic tool name (or the called name?) - Let's stick to generic for consistency
-                                response: { content: { error: `Tool '${requestedToolName}' is not implemented or recognized.` } }, // Wrap error
-                            },
-                        };
-                    }
-                    toolResponses.push(formattedResponsePart);
-                } // End loop over functionCalls
+                        // If no function calls, this turn resulted in text (or an error handled above)
+                        if (accumulatedText) {
+                            console.log("Final Gemini Text Response (from stream):", accumulatedText);
+                            // No need to enqueue 'final' separately if chunks were sent
+                            // enqueue('final', { text: accumulatedText }); // Optional: Send a final complete message if needed
+                            controller.close(); // Close the stream after final text
+                            return;
+                        } else {
+                            // Handle cases where the stream ended without text or function calls
+                            console.warn(`Gemini stream (Turn ${i + 1}) ended without text or function calls.`);
+                            // Check finishReason if available (might need to access last response chunk)
+                            // For simplicity, assume an error if nothing was produced
+                            enqueue('error', { message: 'LLM stream ended unexpectedly without generating text or calling functions.' });
+                            controller.close();
+                            return;
+                        }
+                    } // End of function call vs text response handling for the turn
 
-                // Prepare the prompt for the next iteration with tool responses
-                // Update the prompt for the next loop iteration with the function responses
-                currentPrompt = toolResponses; // This correctly sends the FunctionResponseParts back
-                continue; // Go to the next loop iteration to send responses back to Gemini
+                } // End of conversation loop (for)
 
-            } else {
-                // --- Text Response Handling ---
-                const textParts = response.candidates?.[0]?.content?.parts?.filter((part: Part) => !!part.text) ?? [];
-                const replyText = textParts.map((part: Part) => part.text).join("");
-
-                if (replyText) {
-                    console.log("Final Gemini Text Response:", replyText);
-                    const finalReply: Message = { sender: 'llm', text: replyText };
-                    return NextResponse.json({ reply: finalReply }, { status: 200 }); // Return final text response
+                // --- Fallback if loop completes without returning ---
+                console.warn("Conversation loop completed maximum iterations without returning a final response.");
+                if (safetyAlert) {
+                    enqueue('error', { message: "I cannot provide a response due to safety concerns encountered earlier." });
                 } else {
-                    // Handle cases where there's no function call and no text, despite finishReason being STOP
-                    console.warn(`Gemini response (Loop ${i + 1}) had no text or function calls, finishReason: ${response.candidates?.[0]?.finishReason}`);
-                    // Check if finishReason indicates an unexpected stop
-                    const finishReason = response.candidates?.[0]?.finishReason;
-                    if (finishReason && finishReason !== 'STOP') {
-                        console.error(`Gemini response finished unexpectedly: ${finishReason}`);
-                        return NextResponse.json({ error: `LLM response finished unexpectedly: ${finishReason}` }, { status: 500 });
-                    } else {
-                        // Model stopped without text or function call - potentially valid but unusual
-                        console.error('LLM returned empty response (no text/function call) despite STOP reason:', response);
-                        return NextResponse.json({ error: 'LLM returned empty response.' }, { status: 500 });
-                    }
+                    enqueue('error', { message: 'Agent reached maximum interaction depth without a final response' });
                 }
-            } // End of function call vs text response handling
+                controller.close();
 
-        } // End of conversation loop (for)
+            } catch (error) { // Catch errors from request parsing, setup, or unexpected issues
+                console.error('Error processing chat stream request:', error);
+                const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+                // Try to enqueue error before closing
+                try {
+                    enqueue('error', { message: `Failed to process chat request: ${errorMessage}` });
+                } catch (enqueueError) {
+                    console.error("Failed to enqueue final error message:", enqueueError);
+                }
+                controller.close();
+            }
+        } // End of stream.start
+    }); // End of new ReadableStream
 
-        // --- Fallback if loop completes without returning ---
-        // This should ideally not be reached if logic inside the loop covers all exit conditions.
-        console.warn("Conversation loop completed maximum iterations without returning a final response.");
-        if (safetyAlert) {
-            return NextResponse.json({ reply: { sender: 'llm', text: "I cannot provide a response due to safety concerns encountered earlier." } }, { status: 200 });
-        }
-        return NextResponse.json({ error: 'Agent reached maximum interaction depth without a final response' }, { status: 500 });
-
-    } catch (error) { // Catch errors from request parsing, setup, or unexpected issues
-        console.error('Error processing chat request:', error);
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-        return NextResponse.json({ error: `Failed to process chat request: ${errorMessage}` }, { status: 500 });
-    }
+    // Return the stream response
+    return new Response(stream, {
+        headers: {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+        },
+    });
 }
