@@ -3,6 +3,7 @@ PLAN.md
 # Ignore the cloned MCP server source code directory
 whatsapp-mcp/
 mcp-gsuite/
+github-mcp-server/
 
 # Ignore the cloned source code directory
 cline/
