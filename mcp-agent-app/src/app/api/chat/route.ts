@@ -110,19 +110,36 @@ function detectRelevantServers(prompt: string, config: McpConfig): string[] {
     const relevantIds: string[] = [];
     const lowerCasePrompt = prompt.toLowerCase();
 
-    // Simple keyword spotting
-    if (lowerCasePrompt.includes("whatsapp")) {
-        // Check if a server with id 'whatsapp' actually exists in config
+    // --- Keyword-based Server Detection ---
+
+    // Keywords for WhatsApp
+    const whatsappKeywords = ["whatsapp", "message", "chat"];
+    if (whatsappKeywords.some(keyword => lowerCasePrompt.includes(keyword))) {
         if (config.servers.some(s => s.id === 'whatsapp')) {
-            relevantIds.push('whatsapp');
+            if (!relevantIds.includes('whatsapp')) { // Avoid duplicates
+                relevantIds.push('whatsapp');
+            }
         }
     }
-    if (lowerCasePrompt.includes("github") || lowerCasePrompt.includes("issue") || lowerCasePrompt.includes("repo") || lowerCasePrompt.includes("pull request") || lowerCasePrompt.includes("pr")) {
-        // Check if a server with id 'github' actually exists in config
+
+    // Keywords for GitHub
+    const githubKeywords = ["github", "issue", "repo", "repository", "pull request", "pr", "code"];
+    if (githubKeywords.some(keyword => lowerCasePrompt.includes(keyword))) {
         if (config.servers.some(s => s.id === 'github')) {
-            // Avoid duplicates
-            if (!relevantIds.includes('github')) {
+            if (!relevantIds.includes('github')) { // Avoid duplicates
                 relevantIds.push('github');
+            }
+        }
+    }
+
+    // Keywords for GSuite (Gmail, Calendar, etc.)
+    const gsuiteKeywords = ["gsuite", "gmail", "mail", "email", "calendar", "event", "schedule", "meeting"];
+    if (gsuiteKeywords.some(keyword => lowerCasePrompt.includes(keyword))) {
+        // Check if a server with id 'gsuite' actually exists in config
+        if (config.servers.some(s => s.id === 'gsuite')) {
+            // Avoid duplicates
+            if (!relevantIds.includes('gsuite')) {
+                relevantIds.push('gsuite');
             }
         }
     }
@@ -281,6 +298,48 @@ async function executeMcpTool(serverConfig: McpServerConfig, toolName: string, t
             // Replace placeholder in argsTemplate with actual token
             args = commandConfig.argsTemplate.map(arg => arg.replace('{GITHUB_PAT}', githubPat));
 
+        } else if (serverConfig.id === 'gsuite') {
+            // Use commandConfig which is already destructured
+            const uvPath = process.env[commandConfig.executableEnvVar || 'UV_PATH'] || commandConfig.defaultExecutable;
+
+            // Use optional chaining and nullish coalescing for env var names from config
+            // Cast to any needed if these aren't in the base McpServerCommandConfig type
+            const scriptDirEnvVar = (commandConfig as any).scriptDirEnvVar ?? '';
+            const gauthFileEnvVar = (commandConfig as any).gauthFileEnvVar ?? '';
+            const accountsFileEnvVar = (commandConfig as any).accountsFileEnvVar ?? '';
+            const credentialsDirEnvVar = (commandConfig as any).credentialsDirEnvVar ?? '';
+
+            // Get values, using the potentially empty env var names (process.env[''] will be undefined)
+            const scriptDir = scriptDirEnvVar ? process.env[scriptDirEnvVar] : undefined;
+            const gauthFile = gauthFileEnvVar ? process.env[gauthFileEnvVar] : undefined;
+            const accountsFile = accountsFileEnvVar ? process.env[accountsFileEnvVar] : undefined;
+            const credentialsDir = credentialsDirEnvVar ? process.env[credentialsDirEnvVar] : undefined;
+
+            // Validate required values are present
+            if (!uvPath || !scriptDir || !gauthFile || !accountsFile || !credentialsDir) {
+                // Construct a more detailed error message listing potential env vars
+                const checkedVars = [
+                    commandConfig.executableEnvVar || 'UV_PATH',
+                    scriptDirEnvVar || '(GSUITE_MCP_SCRIPT_DIR not configured)',
+                    gauthFileEnvVar || '(GSUITE_GAUTH_FILE not configured)',
+                    accountsFileEnvVar || '(GSUITE_ACCOUNTS_FILE not configured)',
+                    credentialsDirEnvVar || '(GSUITE_CREDENTIALS_DIR not configured)'
+                ].filter(v => v && !v.startsWith('(')); // Filter out placeholders for unconfigured vars
+
+                // Include uvPath check in the error
+                const errorMsg = `Missing required environment variables or executable for GSuite server (${serverConfig.id}). Check: ${checkedVars.join(', ')}`;
+                console.error(errorMsg); // Log the error server-side
+                return reject(new Error(errorMsg));
+            }
+
+            // Map argsTemplate, replacing placeholders with validated values
+            args = commandConfig.argsTemplate.map(arg =>
+                arg.replace('{GSUITE_MCP_SCRIPT_DIR}', scriptDir)
+                    .replace('{GSUITE_GAUTH_FILE}', gauthFile)
+                    .replace('{GSUITE_ACCOUNTS_FILE}', accountsFile)
+                    .replace('{GSUITE_CREDENTIALS_DIR}', credentialsDir)
+            );
+            command = uvPath; // Set the command executable
         } else {
             return reject(new Error(`Unsupported MCP server ID: ${serverConfig.id}`));
         }
@@ -509,13 +568,56 @@ async function executeMcpTool(serverConfig: McpServerConfig, toolName: string, t
                 return;
             }
             try {
+                // Prepare the arguments, adding __user_id__ for GSuite (internal requirement)
+                const finalToolArgs = { ...toolArgs };
+                if (serverConfig.id === 'gsuite' && finalToolArgs.account) {
+                    // The Python server expects "__user_id__" based on toolhandler.USER_ID_ARG
+                    finalToolArgs.__user_id__ = finalToolArgs.account;
+                }
+
+                // --- GSuite: Auto-add single account if applicable ---
+                if (serverConfig.id === 'gsuite') {
+                    const accountsFileEnvVar = (serverConfig.command as any).accountsFileEnvVar;
+                    const accountsFilePath = accountsFileEnvVar ? process.env[accountsFileEnvVar] : undefined;
+
+                    if (accountsFilePath) {
+                        try {
+                            const accountsFileContent = await fs.readFile(accountsFilePath, 'utf-8');
+                            const parsedAccounts = JSON.parse(accountsFileContent);
+
+                            // Check if exactly one account is configured
+                            if (parsedAccounts && Array.isArray(parsedAccounts.accounts) && parsedAccounts.accounts.length === 1) {
+                                const singleAccountEmail = parsedAccounts.accounts[0]?.email;
+
+                                // Check if account arg exists in finalToolArgs and add if needed
+                                if (singleAccountEmail && finalToolArgs && typeof finalToolArgs === 'object' && !finalToolArgs.hasOwnProperty('account')) {
+                                    console.log(`GSuite: Auto-adding single account '${singleAccountEmail}' to tool args for '${toolName}'.`);
+                                    finalToolArgs.account = singleAccountEmail; // Modify finalToolArgs
+
+                                    // Re-apply the __user_id__ logic in case 'account' was just added and wasn't already there
+                                    if (!finalToolArgs.hasOwnProperty('__user_id__')) {
+                                        console.log(`GSuite: Adding __user_id__ based on auto-added account.`);
+                                        finalToolArgs.__user_id__ = singleAccountEmail;
+                                    }
+                                }
+                            }
+                        } catch (error: any) {
+                            console.warn(`GSuite: Failed to read or parse accounts file ('${accountsFilePath}') for auto-account logic: ${error.message}`);
+                            // Log warning but proceed without auto-account if file reading/parsing fails
+                        }
+                    } else {
+                        console.warn(`GSuite: accountsFileEnvVar ('${accountsFileEnvVar}') not configured or env var not set. Cannot apply auto-account logic.`);
+                    }
+                }
+                // --- End GSuite Logic ---
+
                 // Manually construct the request according to MCP spec (tools/call method)
                 const toolCallPayload: JSONRPCRequest = {
                     jsonrpc: '2.0',
                     method: "tools/call", // Use the generic 'tools/call' method
                     params: {             // Nest tool name and args within params
                         name: toolName,
-                        arguments: toolArgs,
+                        arguments: finalToolArgs, // Use potentially modified args
                     },
                     id: randomUUID(), // Generate ID manually
                 };

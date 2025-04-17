@@ -1105,6 +1105,368 @@
                     }
                 }
             ]
+        },
+        {
+            "id": "gsuite",
+            "description": "Manages Gmail and Google Calendar interactions.",
+            "command": {
+                "executableEnvVar": "UV_PATH",
+                "defaultExecutable": "uv",
+                "argsTemplate": [
+                    "run",
+                    "--directory",
+                    "{GSUITE_MCP_SCRIPT_DIR}",
+                    "mcp-gsuite",
+                    "--gauth-file",
+                    "{GSUITE_GAUTH_FILE}",
+                    "--accounts-file",
+                    "{GSUITE_ACCOUNTS_FILE}",
+                    "--credentials-dir",
+                    "{GSUITE_CREDENTIALS_DIR}"
+                ],
+                "scriptDirEnvVar": "GSUITE_MCP_SCRIPT_DIR",
+                "gauthFileEnvVar": "GSUITE_GAUTH_FILE",
+                "accountsFileEnvVar": "GSUITE_ACCOUNTS_FILE",
+                "credentialsDirEnvVar": "GSUITE_CREDENTIALS_DIR"
+            },
+            "tools": [
+                {
+                    "name": "query_gmail_emails",
+                    "description": "Query Gmail emails based on an optional search query. Returns emails in reverse chronological order (newest first). Returns metadata such as subject and also a short summary of the content.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "query": {
+                                "type": "STRING",
+                                "description": "Gmail search query (optional). Examples:\n- a $string: Search email body, subject, and sender information for $string\n- 'is:unread' for unread emails\n- 'from:example@gmail.com' for emails from a specific sender\n- 'newer_than:2d' for emails from last 2 days\n- 'has:attachment' for emails with attachments\nIf not provided, returns recent emails without filtering.",
+                                "required": false
+                            },
+                            "max_results": {
+                                "type": "NUMBER",
+                                "description": "Maximum number of emails to retrieve (1-500)",
+                                "minimum": 1,
+                                "maximum": 500,
+                                "default": 100
+                            }
+                        },
+                        "required": []
+                    }
+                },
+                {
+                    "name": "get_calendar_events",
+                    "description": "Retrieves calendar events from the user's Google Calendar within a specified time range.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "__calendar_id__": {
+                                "type": "STRING",
+                                "description": "Optional ID of the specific agenda for which you are executing this action.\n                          If not provided, the default calendar is being used. \n                          If not known, the specific calendar id can be retrieved with the list_calendars tool",
+                                "default": "primary"
+                            },
+                            "time_min": {
+                                "type": "STRING",
+                                "description": "Start time in RFC3339 format (e.g. 2024-12-01T00:00:00Z). Defaults to current time if not specified."
+                            },
+                            "time_max": {
+                                "type": "STRING",
+                                "description": "End time in RFC3339 format (e.g. 2024-12-31T23:59:59Z). Optional."
+                            },
+                            "max_results": {
+                                "type": "NUMBER",
+                                "description": "Maximum number of events to return (1-2500)",
+                                "minimum": 1,
+                                "maximum": 2500,
+                                "default": 250
+                            },
+                            "show_deleted": {
+                                "type": "BOOLEAN",
+                                "description": "Whether to include deleted events",
+                                "default": false
+                            }
+                        },
+                        "required": []
+                    }
+                },
+                {
+                    "name": "list_calendars",
+                    "description": "Lists all calendars accessible by the user. \n            Call it before any other tool whenever the user specifies a particular agenda (Family, Holidays, etc.).",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {},
+                        "required": []
+                    }
+                },
+                {
+                    "name": "create_calendar_event",
+                    "description": "Creates a new event in a specified Google Calendar of the specified user.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "__calendar_id__": {
+                                "type": "STRING",
+                                "description": "Optional ID of the specific agenda for which you are executing this action.\n                          If not provided, the default calendar is being used. \n                          If not known, the specific calendar id can be retrieved with the list_calendars tool",
+                                "default": "primary"
+                            },
+                            "summary": {
+                                "type": "STRING",
+                                "description": "Title of the event"
+                            },
+                            "location": {
+                                "type": "STRING",
+                                "description": "Location of the event (optional)"
+                            },
+                            "description": {
+                                "type": "STRING",
+                                "description": "Description or notes for the event (optional)"
+                            },
+                            "start_time": {
+                                "type": "STRING",
+                                "description": "Start time in RFC3339 format (e.g. 2024-12-01T10:00:00Z)"
+                            },
+                            "end_time": {
+                                "type": "STRING",
+                                "description": "End time in RFC3339 format (e.g. 2024-12-01T11:00:00Z)"
+                            },
+                            "attendees": {
+                                "type": "ARRAY",
+                                "items": {
+                                    "type": "STRING"
+                                },
+                                "description": "List of attendee email addresses (optional)"
+                            },
+                            "send_notifications": {
+                                "type": "BOOLEAN",
+                                "description": "Whether to send notifications to attendees",
+                                "default": true
+                            },
+                            "timezone": {
+                                "type": "STRING",
+                                "description": "Timezone for the event (e.g. 'America/New_York'). Defaults to UTC if not specified."
+                            }
+                        },
+                        "required": [
+                            "summary",
+                            "start_time",
+                            "end_time"
+                        ]
+                    }
+                },
+                {
+                    "name": "delete_calendar_event",
+                    "description": "Deletes an event from the user's Google Calendar by its event ID.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "__calendar_id__": {
+                                "type": "STRING",
+                                "description": "Optional ID of the specific agenda for which you are executing this action.\n                          If not provided, the default calendar is being used. \n                          If not known, the specific calendar id can be retrieved with the list_calendars tool",
+                                "default": "primary"
+                            },
+                            "event_id": {
+                                "type": "STRING",
+                                "description": "The ID of the calendar event to delete"
+                            },
+                            "send_notifications": {
+                                "type": "BOOLEAN",
+                                "description": "Whether to send cancellation notifications to attendees",
+                                "default": true
+                            }
+                        },
+                        "required": [
+                            "event_id"
+                        ]
+                    }
+                },
+                {
+                    "name": "get_gmail_email",
+                    "description": "Retrieves a complete Gmail email message by its ID, including the full message body and attachment IDs.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "email_id": {
+                                "type": "STRING",
+                                "description": "The ID of the Gmail message to retrieve"
+                            }
+                        },
+                        "required": [
+                            "email_id"
+                        ]
+                    }
+                },
+                {
+                    "name": "bulk_get_gmail_emails",
+                    "description": "Retrieves multiple Gmail email messages by their IDs in a single request, including the full message bodies and attachment IDs.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "email_ids": {
+                                "type": "ARRAY",
+                                "items": {
+                                    "type": "STRING"
+                                },
+                                "description": "List of Gmail message IDs to retrieve"
+                            }
+                        },
+                        "required": [
+                            "email_ids"
+                        ]
+                    }
+                },
+                {
+                    "name": "create_gmail_draft",
+                    "description": "Creates a draft email message from scratch in Gmail with specified recipient, subject, body, and optional CC recipients.\n            \n            Do NOT use this tool when you want to draft or send a REPLY to an existing message. This tool does NOT include any previous message content. Use the reply_gmail_email tool\n            with send=False instead.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "to": {
+                                "type": "STRING",
+                                "description": "Email address of the recipient"
+                            },
+                            "subject": {
+                                "type": "STRING",
+                                "description": "Subject line of the email"
+                            },
+                            "body": {
+                                "type": "STRING",
+                                "description": "Body content of the email"
+                            },
+                            "cc": {
+                                "type": "ARRAY",
+                                "items": {
+                                    "type": "STRING"
+                                },
+                                "description": "Optional list of email addresses to CC"
+                            }
+                        },
+                        "required": [
+                            "to",
+                            "subject",
+                            "body"
+                        ]
+                    }
+                },
+                {
+                    "name": "delete_gmail_draft",
+                    "description": "Deletes a Gmail draft message by its ID. This action cannot be undone.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "draft_id": {
+                                "type": "STRING",
+                                "description": "The ID of the draft to delete"
+                            }
+                        },
+                        "required": [
+                            "draft_id"
+                        ]
+                    }
+                },
+                {
+                    "name": "reply_gmail_email",
+                    "description": "Creates a reply to an existing Gmail email message and either sends it or saves as draft.\n\n            Use this tool if you want to draft a reply. Use the 'cc' argument if you want to perform a \"reply all\".\n            ",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "original_message_id": {
+                                "type": "STRING",
+                                "description": "The ID of the Gmail message to reply to"
+                            },
+                            "reply_body": {
+                                "type": "STRING",
+                                "description": "The body content of your reply message"
+                            },
+                            "send": {
+                                "type": "BOOLEAN",
+                                "description": "If true, sends the reply immediately. If false, saves as draft.",
+                                "default": false
+                            },
+                            "cc": {
+                                "type": "ARRAY",
+                                "items": {
+                                    "type": "STRING"
+                                },
+                                "description": "Optional list of email addresses to CC on the reply"
+                            }
+                        },
+                        "required": [
+                            "original_message_id",
+                            "reply_body"
+                        ]
+                    }
+                },
+                {
+                    "name": "get_gmail_attachment",
+                    "description": "Retrieves a Gmail attachment by its ID.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "message_id": {
+                                "type": "STRING",
+                                "description": "The ID of the Gmail message containing the attachment"
+                            },
+                            "attachment_id": {
+                                "type": "STRING",
+                                "description": "The ID of the attachment to retrieve"
+                            },
+                            "mime_type": {
+                                "type": "STRING",
+                                "description": "The MIME type of the attachment"
+                            },
+                            "filename": {
+                                "type": "STRING",
+                                "description": "The filename of the attachment"
+                            },
+                            "save_to_disk": {
+                                "type": "STRING",
+                                "description": "The fullpath to save the attachment to disk. If not provided, the attachment is returned as a resource."
+                            }
+                        },
+                        "required": [
+                            "message_id",
+                            "attachment_id",
+                            "mime_type",
+                            "filename"
+                        ]
+                    }
+                },
+                {
+                    "name": "bulk_save_gmail_attachments",
+                    "description": "Saves multiple Gmail attachments to disk by their message IDs and attachment IDs in a single request.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "attachments": {
+                                "type": "ARRAY",
+                                "items": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "message_id": {
+                                            "type": "STRING",
+                                            "description": "ID of the Gmail message containing the attachment"
+                                        },
+                                        "part_id": {
+                                            "type": "STRING",
+                                            "description": "ID of the part containing the attachment"
+                                        },
+                                        "save_path": {
+                                            "type": "STRING",
+                                            "description": "Path where the attachment should be saved"
+                                        }
+                                    },
+                                    "required": [
+                                        "message_id",
+                                        "part_id",
+                                        "save_path"
+                                    ]
+                                }
+                            }
+                        },
+                        "required": [
+                            "attachments"
+                        ]
+                    }
+                }
+            ]
         }
     ]
 }
