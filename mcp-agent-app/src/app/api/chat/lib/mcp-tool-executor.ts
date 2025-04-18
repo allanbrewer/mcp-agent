@@ -8,19 +8,28 @@ import { McpServerConfig } from './types'; // Import the necessary type
 export async function executeMcpTool(serverConfig: McpServerConfig, toolName: string, toolArgs: any): Promise<any> {
     return new Promise(async (resolve, reject) => { // Added async
         const { command: commandConfig } = serverConfig;
-        let command: string;
-        let args: string[];
+        let command: string | undefined;
+        let args: string[] | undefined;
         const childEnv = { ...process.env }; // Start with current environment
+        // Define spawnOptions with default stdio and env
+        let spawnOptions: any = {
+            stdio: ['pipe', 'pipe', 'pipe'], // stdin, stdout, stderr
+            env: childEnv,
+            // cwd will be set below if applicable
+        };
 
-        // --- Determine Command and Arguments based on Server ID ---
-        if (serverConfig.id === 'whatsapp') {
+        // --- Determine Command and Arguments ---
+
+        // Handle specific template-based configs
+        if (serverConfig.id === 'whatsapp' && commandConfig.argsTemplate) {
+            console.log(`Using template config for ${serverConfig.id}`);
             const uvPath = process.env[commandConfig.executableEnvVar || 'UV_PATH'] || commandConfig.defaultExecutable;
             if (!uvPath) {
                 return reject(new Error(`Could not determine executable for MCP server ${serverConfig.id}. Checked env var '${commandConfig.executableEnvVar}' and default '${commandConfig.defaultExecutable}'.`));
             }
-            const scriptDirEnvVar = commandConfig.scriptDirEnvVar || ''; // Default to empty string if not set
+            const scriptDirEnvVar = commandConfig.scriptDirEnvVar || '';
             const scriptDir = process.env[scriptDirEnvVar];
-            if (scriptDirEnvVar && !scriptDir) { // Only require scriptDir if scriptDirEnvVar is specified in config
+            if (scriptDirEnvVar && !scriptDir) {
                 return reject(new Error(`Environment variable '${scriptDirEnvVar}' required for MCP server ${serverConfig.id} script directory is not set.`));
             }
 
@@ -28,79 +37,98 @@ export async function executeMcpTool(serverConfig: McpServerConfig, toolName: st
             args = commandConfig.argsTemplate.map(arg => {
                 if (arg === '{SCRIPT_DIR}') {
                     if (!scriptDir) {
-                        // This should ideally not happen due to the check above, but safeguard anyway
                         reject(new Error(`Argument template for ${serverConfig.id} requires {SCRIPT_DIR}, but no script directory is configured or found.`));
-                        return ''; // Return empty string to be filtered later
+                        return '';
                     }
                     return scriptDir;
                 }
                 return arg;
-            }).filter(arg => arg !== ''); // Filter out empty strings resulting from missing scriptDir
+            }).filter(arg => arg !== '');
 
-            // Check if filtering removed an essential arg
             if (commandConfig.argsTemplate.includes('{SCRIPT_DIR}') && args.length !== commandConfig.argsTemplate.length) {
-                // Reject was already called inside map, but ensure promise is rejected if map didn't throw
                 return reject(new Error(`Failed to substitute {SCRIPT_DIR} in args for ${serverConfig.id}.`));
             }
-
-        } else if (serverConfig.id === 'github') {
+        } else if (serverConfig.id === 'github' && commandConfig.argsTemplate) {
+            console.log(`Using template config for ${serverConfig.id}`);
             const githubPat = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
             if (!githubPat) {
-                // Explicitly check for the required PAT for GitHub
                 return reject(new Error("Missing GITHUB_PERSONAL_ACCESS_TOKEN environment variable for GitHub server."));
             }
             command = commandConfig.defaultExecutable; // Should be "docker"
-            // Replace placeholder in argsTemplate with actual token
             args = commandConfig.argsTemplate.map(arg => arg.replace('{GITHUB_PAT}', githubPat));
 
-        } else if (serverConfig.id === 'gsuite') {
-            // Use commandConfig which is already destructured
+        } else if (serverConfig.id === 'gsuite' && commandConfig.argsTemplate) {
+            console.log(`Using template config for ${serverConfig.id}`);
             const uvPath = process.env[commandConfig.executableEnvVar || 'UV_PATH'] || commandConfig.defaultExecutable;
-
-            // Use optional chaining and nullish coalescing for env var names from config
-            // Cast to any needed if these aren't in the base McpServerCommandConfig type
             const scriptDirEnvVar = (commandConfig as any).scriptDirEnvVar ?? '';
             const gauthFileEnvVar = (commandConfig as any).gauthFileEnvVar ?? '';
             const accountsFileEnvVar = (commandConfig as any).accountsFileEnvVar ?? '';
             const credentialsDirEnvVar = (commandConfig as any).credentialsDirEnvVar ?? '';
 
-            // Get values, using the potentially empty env var names (process.env[''] will be undefined)
             const scriptDir = scriptDirEnvVar ? process.env[scriptDirEnvVar] : undefined;
             const gauthFile = gauthFileEnvVar ? process.env[gauthFileEnvVar] : undefined;
             const accountsFile = accountsFileEnvVar ? process.env[accountsFileEnvVar] : undefined;
             const credentialsDir = credentialsDirEnvVar ? process.env[credentialsDirEnvVar] : undefined;
 
-            // Validate required values are present
             if (!uvPath || !scriptDir || !gauthFile || !accountsFile || !credentialsDir) {
-                // Construct a more detailed error message listing potential env vars
                 const checkedVars = [
                     commandConfig.executableEnvVar || 'UV_PATH',
                     scriptDirEnvVar || '(GSUITE_MCP_SCRIPT_DIR not configured)',
                     gauthFileEnvVar || '(GSUITE_GAUTH_FILE not configured)',
                     accountsFileEnvVar || '(GSUITE_ACCOUNTS_FILE not configured)',
                     credentialsDirEnvVar || '(GSUITE_CREDENTIALS_DIR not configured)'
-                ].filter(v => v && !v.startsWith('(')); // Filter out placeholders for unconfigured vars
-
-                // Include uvPath check in the error
+                ].filter(v => v && !v.startsWith('('));
                 const errorMsg = `Missing required environment variables or executable for GSuite server (${serverConfig.id}). Check: ${checkedVars.join(', ')}`;
-                console.error(errorMsg); // Log the error server-side
+                console.error(errorMsg);
                 return reject(new Error(errorMsg));
             }
 
-            // Map argsTemplate, replacing placeholders with validated values
             args = commandConfig.argsTemplate.map(arg =>
                 arg.replace('{GSUITE_MCP_SCRIPT_DIR}', scriptDir)
                     .replace('{GSUITE_GAUTH_FILE}', gauthFile)
                     .replace('{GSUITE_ACCOUNTS_FILE}', accountsFile)
                     .replace('{GSUITE_CREDENTIALS_DIR}', credentialsDir)
             );
-            command = uvPath; // Set the command executable
+            command = uvPath;
+        } else if (serverConfig.id === 'ddg-search' && commandConfig.argsTemplate) {
+            console.log(`Using template config for ${serverConfig.id}`);
+            const uvPath = process.env[commandConfig.executableEnvVar || 'UV_PATH'] || commandConfig.defaultExecutable;
+            if (!uvPath) {
+                return reject(new Error(`Could not determine executable for MCP server ${serverConfig.id}. Checked env var '${commandConfig.executableEnvVar}' and default '${commandConfig.defaultExecutable}'.`));
+            }
+            const scriptDirEnvVar = commandConfig.scriptDirEnvVar || ''; // e.g., DDG_MCP_SCRIPT_DIR
+            const scriptDir = process.env[scriptDirEnvVar];
+            if (scriptDirEnvVar && !scriptDir) {
+                return reject(new Error(`Environment variable '${scriptDirEnvVar}' required for MCP server ${serverConfig.id} script directory is not set.`));
+            }
+
+            command = uvPath;
+            args = commandConfig.argsTemplate.map(arg => {
+                if (arg === '{SCRIPT_DIR}') {
+                    if (!scriptDir) {
+                        reject(new Error(`Argument template for ${serverConfig.id} requires {SCRIPT_DIR}, but no script directory is configured or found.`));
+                        return '';
+                    }
+                    return scriptDir;
+                }
+                return arg;
+            }).filter(arg => arg !== '');
+
+            if (commandConfig.argsTemplate.includes('{SCRIPT_DIR}') && args.length !== commandConfig.argsTemplate.length) {
+                return reject(new Error(`Failed to substitute {SCRIPT_DIR} in args for ${serverConfig.id}.`));
+            }
         } else {
-            return reject(new Error(`Unsupported MCP server ID: ${serverConfig.id}`));
+            // If neither simple stdio nor specific template matched
+            return reject(new Error(`Could not determine execution command for MCP server ID: ${serverConfig.id}. Check mcp-config.json structure.`));
+        }
+
+        // Ensure command and args were successfully determined
+        if (!command || !args) {
+            return reject(new Error(`Internal error: Failed to determine command or args for MCP server ID: ${serverConfig.id}.`));
         }
 
         // --- Pass Thru Environment Variables ---
-        // Check and pass specified env vars from config if they exist in the current environment
+        // (Keep existing logic, but ensure it runs *after* command/args are set)
         if (commandConfig.envVars) {
             for (const envVarName of commandConfig.envVars) {
                 const value = process.env[envVarName];
@@ -118,12 +146,10 @@ export async function executeMcpTool(serverConfig: McpServerConfig, toolName: st
         // Spawn the process with determined command, args, and environment
         let childProcess: ChildProcessWithoutNullStreams; // Define type
         try {
-            childProcess = spawn(command, args, {
-                stdio: ['pipe', 'pipe', 'pipe'], // stdin, stdout, stderr
-                env: childEnv, // Use the constructed environment
-            });
+            // Pass spawnOptions which now includes env and potentially cwd
+            childProcess = spawn(command, args, spawnOptions);
         } catch (spawnError: any) {
-            console.error(`MCP Server (${serverConfig.id}) immediate spawn error:`, spawnError);
+            console.error(`MCP Server (${serverConfig.id}) immediate spawn error in directory ${spawnOptions.cwd || process.cwd()}:`, spawnError);
             return reject(new Error(`Failed to spawn MCP process '${command}': ${spawnError.message}`));
         }
         // --- End Process Spawning Logic ---
