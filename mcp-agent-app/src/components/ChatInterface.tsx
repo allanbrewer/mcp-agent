@@ -28,13 +28,8 @@ const ChatInterface: React.FC = () => {
         setInputValue('');
         setBackendStatus('Connecting...'); // Initial status
 
-        const eventSource = new EventSource('/api/chat', {
-            // **Correction**: Standard EventSource uses GET. We MUST adapt the backend or use a fetch-based stream approach.
-            // Let's switch to using fetch to handle POST and read the stream.
-
-        });
-
         // --- Using Fetch API for SSE Stream Handling ---
+        // Note: Removed unused 'new EventSource(...)' call which was causing a GET request.
         fetch('/api/chat', {
             method: 'POST',
             headers: {
