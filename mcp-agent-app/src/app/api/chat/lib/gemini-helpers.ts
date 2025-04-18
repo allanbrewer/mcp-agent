@@ -52,6 +52,17 @@ export function detectRelevantServers(prompt: string, config: McpConfig): string
         }
     }
 
+    // Keywords for Web Search (Google, DuckDuckGo)
+    const searchKeywords = ["search", "duckduckgo", "find", "web search", "look up", "internet search"];
+    if (searchKeywords.some(keyword => lowerCasePrompt.includes(keyword))) {
+        // Check for ddg-search server
+        if (config.servers.some(s => s.id === 'ddg-search')) {
+            if (!relevantIds.includes('ddg-search')) {
+                relevantIds.push('ddg-search');
+            }
+        }
+    }
+
     console.log(`Detected relevant servers for prompt: ${relevantIds.join(', ')}`);
     return relevantIds;
 }

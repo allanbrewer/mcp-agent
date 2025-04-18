@@ -1467,6 +1467,60 @@
                     }
                 }
             ]
+        },
+        {
+            "id": "ddg-search",
+            "description": "Searches DuckDuckGo and fetches web content.",
+            "command": {
+                "executableEnvVar": "UV_PATH",
+                "defaultExecutable": "uv",
+                "argsTemplate": [
+                    "run",
+                    "--directory",
+                    "{SCRIPT_DIR}",
+                    "-m",
+                    "duckduckgo_mcp_server.server"
+                ],
+                "scriptDirEnvVar": "DDG_MCP_SCRIPT_DIR"
+            },
+            "tools": [
+                {
+                    "name": "search",
+                    "description": "Search DuckDuckGo and return formatted results.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "query": {
+                                "type": "STRING",
+                                "description": "The search query string"
+                            },
+                            "max_results": {
+                                "type": "NUMBER",
+                                "description": "Maximum number of results to return (default: 10)"
+                            }
+                        },
+                        "required": [
+                            "query"
+                        ]
+                    }
+                },
+                {
+                    "name": "fetch_content",
+                    "description": "Fetch and parse content from a webpage URL.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "url": {
+                                "type": "STRING",
+                                "description": "The webpage URL to fetch content from"
+                            }
+                        },
+                        "required": [
+                            "url"
+                        ]
+                    }
+                }
+            ]
         }
     ]
 }

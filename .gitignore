@@ -1,10 +1,12 @@
-PLAN.md
-FRONTEND_IMPROVEMENT_PLAN.md
+# Ignore plan docs for AI
+docs/
 
 # Ignore the cloned MCP server source code directory
 whatsapp-mcp/
 mcp-gsuite/
 github-mcp-server/
+web-search/
+duckduckgo-mcp-server/
 
 # Ignore the cloned source code directory
 cline/
