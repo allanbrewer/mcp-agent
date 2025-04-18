@@ -5,7 +5,7 @@ import Message from './Message';
 import ChatInput from './ChatInput';
 
 interface MessageData {
-    sender: 'user' | 'llm';
+    sender: 'user' | 'llm' | 'tool'; // Added 'tool' sender type
     text: string;
 }
 
@@ -16,6 +16,7 @@ const ChatInterface: React.FC = () => {
     const [inputValue, setInputValue] = useState<string>('');
     const [backendStatus, setBackendStatus] = useState<string | null>(null); // State for backend status
     const messagesEndRef = useRef<null | HTMLDivElement>(null); // Ref for scrolling
+    // Removed isShowingToolStatus state
 
     const handleSendMessage = (text: string) => { // Removed async
         if (!text.trim()) return;
@@ -28,15 +29,6 @@ const ChatInterface: React.FC = () => {
         setBackendStatus('Connecting...'); // Initial status
 
         const eventSource = new EventSource('/api/chat', {
-            // EventSource doesn't directly support sending POST body in the standard way.
-            // We need to pass the data via query parameters or use a different approach if large data is needed.
-            // For simplicity, let's assume the backend can handle GET or we adjust later.
-            // A common workaround is to initiate the SSE connection and then send the data via a separate POST.
-            // Here, we'll stick to the standard EventSource which uses GET.
-            // The backend needs to be adapted to read messages from context/session or another mechanism if GET is used.
-            // *** OR *** we can use fetch with a ReadableStream response (more complex).
-            // Let's proceed assuming the backend /api/chat can handle the POST request body even when establishing SSE
-            // (This is non-standard but some frameworks might allow it, or we adjust backend later)
             // **Correction**: Standard EventSource uses GET. We MUST adapt the backend or use a fetch-based stream approach.
             // Let's switch to using fetch to handle POST and read the stream.
 
@@ -69,7 +61,7 @@ const ChatInterface: React.FC = () => {
                         if (done) {
                             console.log('Stream finished.');
                             setBackendStatus(null); // Clear status on stream end
-                            // Check if the last message is still empty (error before any text?)
+                            // Check if the last message is still empty
                             setMessages(prev => {
                                 const lastMsg = prev[prev.length - 1];
                                 if (lastMsg && lastMsg.sender === 'llm' && lastMsg.text === '') {
@@ -104,30 +96,51 @@ const ChatInterface: React.FC = () => {
                                     const parsedData = JSON.parse(eventData);
                                     console.log(`SSE Event (${eventType}):`, parsedData);
 
-                                    if (eventType === 'status' || eventType === 'log') {
+                                    // --- Event Handling Logic ---
+                                    if (eventType === 'status') {
+                                        // Update bottom status bar only
                                         setBackendStatus(parsedData.message || 'Processing...');
+                                    } else if (eventType === 'log') {
+                                        // Only update bottom status bar for logs
+                                        setBackendStatus(parsedData.message || 'Processing...');
+                                    } else if (eventType === 'tool_completed') {
+                                        // Insert the permanent tool summary message
+                                        const newToolMessage: MessageData = {
+                                            sender: 'tool' as const,
+                                            text: parsedData.summary || 'Tool execution completed.', // Use summary from backend
+                                        };
+                                        setMessages(prev => [
+                                            ...prev.slice(0, -1), // Messages before the LLM placeholder
+                                            newToolMessage,       // The new tool message
+                                            prev[prev.length - 1] // The LLM placeholder
+                                        ]);
+                                        // Clear bottom status bar when tool completes, before LLM chunk arrives
+                                        setBackendStatus(null);
                                     } else if (eventType === 'llm_chunk') {
+                                        // Simply append chunks to the last LLM message
                                         setMessages(prevMessages => {
                                             const lastMessageIndex = prevMessages.length - 1;
-                                            // Ensure we are updating the placeholder LLM message
                                             if (lastMessageIndex >= 0 && prevMessages[lastMessageIndex].sender === 'llm') {
                                                 const updatedMessages = [...prevMessages];
                                                 updatedMessages[lastMessageIndex] = {
                                                     ...updatedMessages[lastMessageIndex],
-                                                    text: updatedMessages[lastMessageIndex].text + parsedData.text,
+                                                    text: updatedMessages[lastMessageIndex].text + parsedData.text, // Append normally
                                                 };
+                                                // Clear status bar on first chunk if not already cleared by tool_completed
+                                                if (backendStatus !== null) setBackendStatus('Generating response...');
                                                 return updatedMessages;
                                             }
-                                            return prevMessages; // Should not happen if placeholder was added correctly
+                                            return prevMessages;
                                         });
                                     } else if (eventType === 'error') {
                                         console.error('SSE Error Event:', parsedData.message);
                                         setBackendStatus(`Error: ${parsedData.message}`);
-                                        // Add error message to chat?
+                                        // Replace placeholder with error message
                                         setMessages(prev => [...prev.slice(0, -1), { sender: 'llm' as const, text: `Sorry, an error occurred: ${parsedData.message}` }]); // Explicitly type sender
                                         reader.cancel(); // Stop reading on error
                                         return; // Stop processing chunks
                                     }
+                                    // Add other event types if needed
                                 } catch (e) {
                                     console.error('Error parsing SSE data:', e, 'Data:', eventData);
                                 }
@@ -166,9 +179,16 @@ const ChatInterface: React.FC = () => {
         <div className="flex flex-col h-full w-full max-w-5xl mx-auto px-4 pt-6 pb-2">
             {/* Message display area - adjusted padding/spacing */}
             <div className="flex-grow overflow-y-auto mb-4 pr-2 space-y-2"> {/* Reduced space-y, added pr for scrollbar */}
-                {messages.map((msg, index) => (
-                    <Message key={index} sender={msg.sender} text={msg.text} />
-                ))}
+                {messages.map((msg, index) => {
+                    // No longer need to pass displayHint
+                    return (
+                        <Message
+                            key={index}
+                            sender={msg.sender}
+                            text={msg.text}
+                        />
+                    );
+                })}
                 {/* Dummy div to target for scrolling */}
                 <div ref={messagesEndRef} />
             </div>

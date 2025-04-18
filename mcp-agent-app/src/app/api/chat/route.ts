@@ -813,10 +813,16 @@ export async function POST(request: NextRequest) {
                                                 try {
                                                     const toolResult = await executeMcpTool(serverConfig, actualToolName, (actualArgs ?? {}) as any);
                                                     console.log(`executeMcpTool call successful for ${serverName}/${actualToolName}. Result:`, toolResult);
-                                                    enqueue('log', { message: `Tool ${serverName}/${actualToolName} executed successfully.` });
+                                                    enqueue('log', { message: `Tool ${serverName}/${actualToolName} executed successfully.` }); // Keep log event
+
+                                                    // --- Add tool_completed event ---
+                                                    const summary = `Used ${serverName}: ${actualToolName.replace(/_/g, ' ')}`;
+                                                    enqueue('tool_completed', { summary: summary });
+                                                    // --- End tool_completed event ---
+
                                                     formattedResponsePart = {
                                                         functionResponse: {
-                                                            name: "use_mcp_tool",
+                                                            name: "use_mcp_tool", // Still need to send the result back to Gemini
                                                             response: { content: toolResult },
                                                         },
                                                     };
