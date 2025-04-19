@@ -1,0 +1,24 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Chat {
+  id           String   @id @default(uuid())
+  userId       String? // Optional: For future multi-user support
+  title        String
+  createdAt    DateTime @default(now())
+  lastModified DateTime @updatedAt
+  history      Json // Store the Gemini Content[] array as JSON
+  systemPrompt String?
+
+  @@index([userId]) // Index userId if it becomes frequently queried
+}
