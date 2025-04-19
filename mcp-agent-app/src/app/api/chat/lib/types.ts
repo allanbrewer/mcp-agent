@@ -7,6 +7,7 @@ export interface Message {
 // Define the structure for the incoming request body
 export interface RequestBody {
     messages: Message[];
+    modelId?: string; // Add optional modelId
 }
 
 // --- MCP Server Configuration Interfaces ---
@@ -32,3 +33,19 @@ export interface McpServerConfig {
 // Define the overall structure of the config file
 export interface McpConfig { servers: McpServerConfig[]; }
 // --- End MCP Server Configuration Interfaces ---
+
+// --- LLM Configuration Interfaces ---
+export interface LlmModel {
+    id: string;
+    name: string;
+}
+export interface LlmProvider {
+    id: string;
+    name: string;
+    models: LlmModel[];
+    defaultModelId: string;
+}
+export interface LlmConfig {
+    providers: LlmProvider[];
+}
+// --- End LLM Configuration Interfaces ---

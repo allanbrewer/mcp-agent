@@ -19,6 +19,7 @@ model Chat {
   lastModified DateTime @updatedAt
   history      Json // Store the Gemini Content[] array as JSON
   systemPrompt String?
+  modelId      String? // Store the ID of the LLM model used
 
   @@index([userId]) // Index userId if it becomes frequently queried
 }

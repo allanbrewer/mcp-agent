@@ -1,8 +1,9 @@
 import { NextResponse, NextRequest } from 'next/server'; // Added NextRequest
 import { GoogleGenAI, HarmCategory, HarmBlockThreshold, Content, Part, FunctionDeclaration, Tool, FunctionCallingConfigMode, Type } from '@google/genai';
+import llmConfigData from '../../../../llm-config.json'; // Import LLM config
 
 // Import types and refactored functions
-import { Message, RequestBody, McpConfig, McpServerConfig } from './lib/types';
+import { Message, RequestBody, McpConfig, McpServerConfig, LlmConfig, LlmProvider, LlmModel } from './lib/types'; // Added LlmProvider, LlmModel
 import { loadMcpConfig } from './lib/mcp-config-loader';
 import {
     mapMessagesToGemini,
@@ -19,7 +20,11 @@ import dotenv from 'dotenv';
 import fs from 'fs/promises'; // Use promises API for async operations
 import path from 'path'; // Import path for resolving config file path
 
-dotenv.config({ path: '.env.local' }); // Ensure .env.local is loaded if needed server-side
+dotenv.config({ path: '.env.local' }); // Ensure .env.local is loaded
+
+// Load LLM config data (but process it inside the request handler)
+const llmConfig: LlmConfig = llmConfigData as LlmConfig;
+
 
 const API_KEY = process.env.GOOGLE_API_KEY;
 
@@ -65,9 +70,29 @@ export async function POST(request: NextRequest) {
             };
 
             try {
-                const mcpConfig = await loadMcpConfig(); // Load MCP config
+                // --- Find Google Provider and Default Model ID ---
+                // Moved inside the try block for correct type narrowing
+                const googleProvider = llmConfig.providers.find((p: LlmProvider) => p.id === 'google');
+                if (!googleProvider) {
+                    // This error will be caught by the outer catch block
+                    throw new Error("Google provider configuration not found in llm-config.json");
+                }
+                const DEFAULT_MODEL_ID = googleProvider.defaultModelId;
+                // --- End Provider/Default ID ---
+
+                const mcpConfig = await loadMcpConfig();
                 const body: RequestBody = await request.json();
-                const { messages } = body;
+                // Extract messages and modelId from body
+                const { messages, modelId: requestedModelId } = body;
+
+                // Determine the model ID to use: request body or default from config
+                // Also validate if the requested model is actually in our config for Google
+                // Add explicit type for m
+                // Now googleProvider is guaranteed to be defined here
+                const modelIdToUse = requestedModelId && googleProvider.models.some((m: LlmModel) => m.id === requestedModelId)
+                    ? requestedModelId
+                    : DEFAULT_MODEL_ID;
+                console.log(`Using model ID: ${modelIdToUse}`); // Log the selected model
 
                 if (!messages || messages.length === 0) {
                     enqueue('error', { message: 'No messages provided' });
@@ -111,7 +136,7 @@ export async function POST(request: NextRequest) {
                 const systemInstruction: Content = { role: 'system', parts: [{ text: dynamicSystemPrompt }] }; // Use 'system' role for system instructions
 
                 const chat = genAI.chats.create({
-                    model: "gemini-2.0-flash-001",
+                    model: modelIdToUse, // Use the determined model ID
                     history: chatHistoryForStart,
                     config: {
                         ...generationConfig,

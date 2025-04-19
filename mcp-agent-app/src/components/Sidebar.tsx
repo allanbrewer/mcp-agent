@@ -3,10 +3,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { MessageSquare, PanelLeftClose, PanelRightClose, BrainCircuit, Plus, Trash2, Loader2, RefreshCw, Save } from 'lucide-react'; // Added Save icon
-import { useChat, ChatMetadata } from '@/context/ChatContext';
+import { useChat, ChatMetadata, LlmProvider, LlmModel } from '@/context/ChatContext'; // Import LLM types
 
 const Sidebar: React.FC = () => {
-    const { startNewChat, loadChat, currentChatId, fetchChatList, refreshCounter, messages, saveCurrentChat } = useChat();
+    // Get LLM state from context
+    const {
+        startNewChat, loadChat, currentChatId, fetchChatList, refreshCounter, messages, saveCurrentChat,
+        llmConfig, currentModelId, setCurrentModelId
+    } = useChat();
 
     const [isExpanded, setIsExpanded] = useState(true);
     const [hasMounted, setHasMounted] = useState(false);
@@ -14,6 +18,9 @@ const Sidebar: React.FC = () => {
     const [isLoading, setIsLoading] = useState(false); // Loading history list
     const [isSaving, setIsSaving] = useState(false); // Saving state for button
     const [error, setError] = useState<string | null>(null);
+
+    // Find the Google provider config (assuming only Google for Phase 1)
+    const googleProvider = llmConfig.providers.find(p => p.id === 'google');
 
     // Load initial chat list and refresh when counter changes
     const loadInitialChats = useCallback(async () => {
@@ -127,8 +134,31 @@ const Sidebar: React.FC = () => {
                     </button>
                 </div>
 
+                {/* --- Model Selection Dropdown --- */}
+                {hasMounted && isExpanded && googleProvider && (
+                    <div className="px-4 pb-2">
+                        <label htmlFor="model-select" className="block mb-1 text-xs font-semibold text-gray-500 tracking-wider">
+                            Model:
+                        </label>
+                        <select
+                            id="model-select"
+                            value={currentModelId}
+                            onChange={(e) => setCurrentModelId(e.target.value)}
+                            className="w-full p-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-blue-500 focus:border-blue-500"
+                        >
+                            {googleProvider.models.map((model: LlmModel) => (
+                                <option key={model.id} value={model.id}>
+                                    {model.name}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                )}
+                {/* --- End Model Selection Dropdown --- */}
+
+
                 {/* Chat History Section */}
-                <nav className="flex-grow p-4 pt-0 space-y-2">
+                <nav className="flex-grow p-4 pt-2 space-y-2"> {/* Adjusted pt-2 */}
                     {hasMounted && isExpanded && (
                         <h2 className="px-2 mb-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                             Chat History

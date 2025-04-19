@@ -1,0 +1,31 @@
+{
+    "providers": [
+        {
+            "id": "google",
+            "name": "Google",
+            "models": [
+                {
+                    "id": "gemini-2.5-flash-preview-04-17",
+                    "name": "Gemini 2.5 Flash Preview (04-17)"
+                },
+                {
+                    "id": "gemini-2.5-pro-preview-03-25",
+                    "name": "Gemini 2.5 Pro Preview (03-25)"
+                },
+                {
+                    "id": "gemini-2.5-pro-exp-03-25",
+                    "name": "Gemini 2.5 Pro Experimental (03-25)"
+                },
+                {
+                    "id": "gemini-2.0-flash-001",
+                    "name": "Gemini 2.0 Flash"
+                },
+                {
+                    "id": "gemini-2.0-flash-lite-001",
+                    "name": "Gemini 2.0 Flash Lite"
+                }
+            ],
+            "defaultModelId": "gemini-2.0-flash-001"
+        }
+    ]
+}

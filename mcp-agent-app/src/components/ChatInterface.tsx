@@ -10,7 +10,7 @@ import { useChat, MessageData } from '@/context/ChatContext'; // Import context 
 const ChatInterface: React.FC = () => {
     // Get state and actions from context
     // Removed saveCurrentChat as it's handled by Sidebar now
-    const { currentChatId, messages, setMessages } = useChat();
+    const { currentChatId, messages, setMessages, currentModelId } = useChat(); // Add currentModelId
 
     // Local state for input and UI status
     const [inputValue, setInputValue] = useState<string>('');
@@ -44,7 +44,8 @@ const ChatInterface: React.FC = () => {
             },
             // Send history *before* the placeholder LLM message
             // Use the state *before* adding the placeholder
-            body: JSON.stringify({ messages: currentMessages }),
+            // Include the currentModelId from context
+            body: JSON.stringify({ messages: currentMessages, modelId: currentModelId }),
         })
             .then(response => {
                 if (!response.ok) {

@@ -7,6 +7,7 @@ interface CreateChatRequestBody {
     title: string;
     history: Content[]; // Expecting the full Gemini history format
     systemPrompt?: string;
+    modelId?: string; // Add optional modelId
     // userId?: string; // Add later if implementing user accounts
 }
 
@@ -53,6 +54,7 @@ export async function POST(request: NextRequest) {
                 title: body.title,
                 history: body.history as any, // Cast to 'any' for Prisma Json type
                 systemPrompt: body.systemPrompt,
+                modelId: body.modelId, // Add modelId
             },
         });
         console.log(`[API POST /api/chats] Created new chat with ID: ${newChat.id}`);

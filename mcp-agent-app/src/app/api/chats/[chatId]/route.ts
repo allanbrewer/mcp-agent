@@ -99,9 +99,10 @@ export async function PUT(request: NextRequest, context: { params: RouteParams }
         const updatedChat = await prisma.chat.update({
             where: { id: chatId },
             data: {
-                title: body.title,
+                title: body.title, // Update title if provided
                 history: body.history as any,
                 systemPrompt: body.systemPrompt,
+                modelId: body.modelId, // Update modelId if provided
             },
         });
         console.log(`[API PUT /api/chats/[chatId]] Updated chat: ${chatId}`);
