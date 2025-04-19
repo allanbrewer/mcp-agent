@@ -45,3 +45,10 @@ next-env.d.ts
 
 # credentials
 gsuite-credentials/
+
+# Prisma
+prisma/dev.db
+prisma/*.db-journal
+prisma/.env
+prisma/.env.*
+src/generated/prisma/

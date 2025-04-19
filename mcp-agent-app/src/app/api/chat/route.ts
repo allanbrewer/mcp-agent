@@ -1,9 +1,5 @@
-
-import { randomUUID } from 'crypto';
 import { NextResponse, NextRequest } from 'next/server'; // Added NextRequest
-import { spawn, ChildProcessWithoutNullStreams } from 'child_process'; // Added ChildProcessWithoutNullStreams
 import { GoogleGenAI, HarmCategory, HarmBlockThreshold, Content, Part, FunctionDeclaration, Tool, FunctionCallingConfigMode, Type } from '@google/genai';
-import { JSONRPCClient, JSONRPCRequest } from 'json-rpc-2.0'; // Added
 
 // Import types and refactored functions
 import { Message, RequestBody, McpConfig, McpServerConfig } from './lib/types';
@@ -135,8 +131,21 @@ export async function POST(request: NextRequest) {
                     console.log(`--- Loop ${i + 1}: Sending to Gemini ---`);
                     enqueue('status', { message: `Thinking... (Turn ${i + 1})` });
 
-                    // Use sendMessageStream
-                    const resultStream = await chat.sendMessageStream({ message: currentPrompt });
+                    // Prepare parts for sendMessageStream
+                    const messageToSendParts: Part[] = [];
+                    if (typeof currentPrompt === 'string') {
+                        messageToSendParts.push({ text: currentPrompt });
+                    } else if (Array.isArray(currentPrompt)) {
+                        currentPrompt.forEach(part => {
+                            messageToSendParts.push(part);
+                        });
+                    }
+
+                    // Use sendMessageStream - ensure message is in the correct format
+                    // The message property should contain the parts array or a string
+                    const messageForStream = { message: messageToSendParts };
+                    const resultStream = await chat.sendMessageStream(messageForStream);
+
 
                     let accumulatedText = ""; // Accumulate text chunks for this turn
                     let functionCallDetected = false;
