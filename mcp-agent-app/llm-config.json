@@ -26,6 +26,29 @@
                 }
             ],
             "defaultModelId": "gemini-2.0-flash-001"
+        },
+        {
+            "id": "xai",
+            "name": "XAI",
+            "models": [
+                {
+                    "id": "grok-3-beta",
+                    "name": "Grok 3 Beta"
+                },
+                {
+                    "id": "grok-3-mini-beta",
+                    "name": "Grok 3 Mini Beta"
+                },
+                {
+                    "id": "grok-2-vision-1212",
+                    "name": "Grok 2 Vision"
+                },
+                {
+                    "id": "grok-2-image-1212",
+                    "name": "Grok 2 Image"
+                }
+            ],
+            "defaultModelId": "grok-3-mini-beta"
         }
     ]
 }

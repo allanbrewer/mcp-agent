@@ -9,7 +9,7 @@ const Sidebar: React.FC = () => {
     // Get LLM state from context
     const {
         startNewChat, loadChat, currentChatId, fetchChatList, refreshCounter, messages, saveCurrentChat,
-        llmConfig, currentModelId, setCurrentModelId
+        llmConfig, currentProviderId, setCurrentProviderId, currentModelId, setCurrentModelId // Add provider state
     } = useChat();
 
     const [isExpanded, setIsExpanded] = useState(true);
@@ -19,8 +19,19 @@ const Sidebar: React.FC = () => {
     const [isSaving, setIsSaving] = useState(false); // Saving state for button
     const [error, setError] = useState<string | null>(null);
 
-    // Find the Google provider config (assuming only Google for Phase 1)
-    const googleProvider = llmConfig.providers.find(p => p.id === 'google');
+    // Find the currently selected provider's config
+    const selectedProvider = llmConfig.providers.find(p => p.id === currentProviderId);
+
+    // Handler for provider change
+    const handleProviderChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+        const newProviderId = event.target.value;
+        setCurrentProviderId(newProviderId);
+        // Reset model to the default for the new provider
+        const newProviderConfig = llmConfig.providers.find(p => p.id === newProviderId);
+        if (newProviderConfig) {
+            setCurrentModelId(newProviderConfig.defaultModelId);
+        }
+    };
 
     // Load initial chat list and refresh when counter changes
     const loadInitialChats = useCallback(async () => {
@@ -140,8 +151,30 @@ const Sidebar: React.FC = () => {
                     </button>
                 </div>
 
-                {/* --- Model Selection Dropdown --- */}
-                {hasMounted && isExpanded && googleProvider && (
+                {/* --- Provider Selection Dropdown --- */}
+                {hasMounted && isExpanded && llmConfig.providers.length > 1 && (
+                    <div className="px-4 pb-2">
+                        <label htmlFor="provider-select" className="block mb-1 text-xs font-semibold text-gray-500 tracking-wider">
+                            Provider:
+                        </label>
+                        <select
+                            id="provider-select"
+                            value={currentProviderId}
+                            onChange={handleProviderChange}
+                            className="w-full p-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-blue-500 focus:border-blue-500"
+                        >
+                            {llmConfig.providers.map((provider: LlmProvider) => (
+                                <option key={provider.id} value={provider.id}>
+                                    {provider.name}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                )}
+                {/* --- End Provider Selection Dropdown --- */}
+
+                {/* --- Model Selection Dropdown (Dynamic) --- */}
+                {hasMounted && isExpanded && selectedProvider && (
                     <div className="px-4 pb-2">
                         <label htmlFor="model-select" className="block mb-1 text-xs font-semibold text-gray-500 tracking-wider">
                             Model:
@@ -152,9 +185,9 @@ const Sidebar: React.FC = () => {
                             onChange={(e) => setCurrentModelId(e.target.value)}
                             className="w-full p-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-blue-500 focus:border-blue-500"
                         >
-                            {googleProvider.models.map((model: LlmModel) => (
+                            {selectedProvider.models.map((model: LlmModel) => (
                                 <option key={model.id} value={model.id}>
-                                    {model.name}
+                                    {model.name} {/* Display model name */}
                                 </option>
                             ))}
                         </select>

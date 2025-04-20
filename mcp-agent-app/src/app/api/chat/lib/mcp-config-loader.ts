@@ -29,3 +29,5 @@ export async function loadMcpConfig(): Promise<McpConfig> {
     }
 }
 // --- End MCP Configuration Loading ---
+
+// Removed getServerConfigForTool as it's no longer needed with createMCPClient

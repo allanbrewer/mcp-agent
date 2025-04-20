@@ -59,8 +59,8 @@ interface ChatContextType {
     llmConfig: LlmConfig; // Expose the loaded config
     currentModelId: string;
     setCurrentModelId: (modelId: string) => void;
-    // currentProviderId: string; // Add later in Phase 2
-    // setCurrentProviderId: (providerId: string) => void; // Add later in Phase 2
+    currentProviderId: string; // Add provider state
+    setCurrentProviderId: (providerId: string) => void; // Add provider setter
 }
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
@@ -73,13 +73,17 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const [refreshCounter, setRefreshCounter] = useState(0);
 
     // --- LLM Selection State ---
-    // For now, assume Google is the only provider
-    const googleProvider = llmConfig.providers.find(p => p.id === 'google');
-    if (!googleProvider) {
-        // This should ideally not happen if config is valid, but good practice
-        throw new Error("Google provider configuration not found in llm-config.json");
+    // --- LLM Selection State ---
+    // Determine initial provider and model
+    const initialProviderId = llmConfig.providers[0]?.id || 'google'; // Default to first provider or 'google'
+    const initialProvider = llmConfig.providers.find(p => p.id === initialProviderId);
+    if (!initialProvider) {
+        throw new Error(`Initial provider configuration ('${initialProviderId}') not found in llm-config.json`);
     }
-    const [currentModelId, setCurrentModelId] = useState<string>(googleProvider.defaultModelId);
+    const initialModelId = initialProvider.defaultModelId;
+
+    const [currentProviderId, setCurrentProviderId] = useState<string>(initialProviderId);
+    const [currentModelId, setCurrentModelId] = useState<string>(initialModelId);
 
     const triggerListRefresh = useCallback(() => {
         setRefreshCounter(prev => prev + 1);
@@ -88,9 +92,10 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const startNewChat = useCallback(() => {
         setCurrentChatId(null);
         setMessages([]); // Set to empty array for new chat
-        // Reset model to default when starting a new chat
-        setCurrentModelId(googleProvider.defaultModelId);
-    }, [googleProvider?.defaultModelId]); // Add dependency
+        // Reset provider and model to defaults when starting a new chat
+        setCurrentProviderId(initialProviderId);
+        setCurrentModelId(initialModelId);
+    }, [initialProviderId, initialModelId]); // Add dependencies
 
     // Remove useCallback wrapper from loadChat
     const loadChat = async (chatId: string) => {
@@ -131,20 +136,28 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             // Set messages and potentially the model ID if saved with the chat
             setMessages(loadedMessages.length > 0 ? loadedMessages : []); // Fallback to empty array
             // --- Load Model ID ---
-            // Assuming ChatRecord will have an optional modelId field (add to type later)
-            const loadedModelId = (chatData as any).modelId; // Use 'any' temporarily
-            if (loadedModelId && googleProvider.models.some(m => m.id === loadedModelId)) {
+            // --- Load Provider and Model ID ---
+            const loadedProviderId = (chatData as any).providerId || initialProviderId; // Fallback to initial
+            const loadedModelId = (chatData as any).modelId;
+
+            const loadedProviderConfig = llmConfig.providers.find(p => p.id === loadedProviderId);
+
+            if (loadedProviderConfig && loadedModelId && loadedProviderConfig.models.some(m => m.id === loadedModelId)) {
+                // If valid provider and model found in chat data, use them
+                setCurrentProviderId(loadedProviderId);
                 setCurrentModelId(loadedModelId);
             } else {
-                // Fallback to default if not saved or invalid
-                setCurrentModelId(googleProvider.defaultModelId);
+                // Fallback to initial defaults if not saved or invalid
+                setCurrentProviderId(initialProviderId);
+                setCurrentModelId(initialModelId);
             }
-            // --- End Load Model ID ---
+            // --- End Load Provider and Model ID ---
         } catch (error: any) {
             console.error("[CONTEXT] Error in loadChat function:", error);
             setMessages([{ sender: 'llm', text: `Error loading chat: ${error.message}` }]);
-            // Reset model to default on error
-            setCurrentModelId(googleProvider.defaultModelId);
+            // Reset provider and model to defaults on error
+            setCurrentProviderId(initialProviderId);
+            setCurrentModelId(initialModelId);
         }
     }; // End of loadChat function (no useCallback)
 
@@ -192,9 +205,10 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 method: method,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    title: title, // Send title for both POST and PUT
+                    title: title,
                     history: historyToSave,
-                    modelId: currentModelId, // Include current model ID when saving/updating
+                    providerId: currentProviderId, // Include provider ID
+                    modelId: currentModelId, // Include model ID
                     // systemPrompt: "..." // TODO: Need to track/pass the system prompt used
                 }),
             });
@@ -214,7 +228,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             console.error(`[CONTEXT] Error ${currentChatId ? 'updating' : 'saving'} chat in context:`, error); // Keep error log
             throw error; // Re-throw error so UI can handle it
         }
-    }, [messages, currentChatId, currentModelId, triggerListRefresh, setCurrentChatId]); // Removed setMessages, added currentModelId
+    }, [messages, currentChatId, currentProviderId, currentModelId, triggerListRefresh, setCurrentChatId]); // Added currentProviderId dependency
 
     return (
         <ChatContext.Provider value={{
@@ -229,7 +243,9 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             triggerListRefresh,
             refreshCounter,
             // --- LLM Selection ---
-            llmConfig: llmConfig, // Provide the loaded config
+            llmConfig: llmConfig,
+            currentProviderId, // Provide provider state
+            setCurrentProviderId, // Provide provider setter
             currentModelId,
             setCurrentModelId
         }}>
