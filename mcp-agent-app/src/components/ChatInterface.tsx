@@ -175,15 +175,27 @@ const ChatInterface: React.FC = () => {
         // Adjusted container
         <div className="flex flex-col h-full w-full max-w-5xl mx-auto px-4 pt-6 pb-2">
             {/* Message display area */}
-            <div className="flex-grow overflow-y-auto mb-4 pr-2 space-y-2">
-                {messages.map((msg, index) => (
-                    <Message
-                        key={index} // Consider more stable key if messages can be reordered/deleted
-                        sender={msg.sender}
-                        text={msg.text}
-                    />
-                ))}
-                <div ref={messagesEndRef} />
+            <div className="flex-grow overflow-y-auto mb-4 pr-2 flex flex-col"> {/* Added flex flex-col */}
+                {messages.length === 0 ? (
+                    // Initial Welcome Message State
+                    <div className="flex-grow flex flex-col items-center justify-center text-center">
+                        <h1 className="text-4xl font-semibold animate-text-gradient"> {/* Apply gradient animation */}
+                            Welcome Allan! How can I assist you?
+                        </h1>
+                    </div>
+                ) : (
+                    // Regular Message Display
+                    <div className="space-y-2"> {/* Wrapper for messages */}
+                        {messages.map((msg, index) => (
+                            <Message
+                                key={index} // Consider more stable key if messages can be reordered/deleted
+                                sender={msg.sender}
+                                text={msg.text}
+                            />
+                        ))}
+                    </div>
+                )}
+                <div ref={messagesEndRef} /> {/* Scroll target remains outside */}
             </div>
 
             {/* Input Area Container */}

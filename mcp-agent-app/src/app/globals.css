@@ -24,3 +24,33 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Add custom animation for text gradient */
+@keyframes text-gradient {
+  0% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+/* Utility class to apply the gradient and animation */
+.animate-text-gradient {
+  @apply bg-gradient-to-r from-blue-600 via-gray-500 to-blue-600;
+  /* Adjust colors as needed */
+  background-size: 200% auto;
+  /* Make gradient wider than element for movement */
+  background-clip: text;
+  -webkit-background-clip: text;
+  /* For Safari */
+  color: transparent;
+  /* Make original text transparent */
+  animation: text-gradient 5s ease infinite;
+  /* Apply the animation */
+}

@@ -53,7 +53,13 @@ const Sidebar: React.FC = () => {
             if (!response.ok) {
                 throw new Error(`Failed to delete chat: ${response.statusText}`);
             }
+            // Update local list *after* potential state reset
             setSavedChats(prevChats => prevChats.filter(chat => chat.id !== chatId));
+
+            // Check if the deleted chat was the currently active one
+            if (chatId === currentChatId) {
+                startNewChat(); // Reset the chat interface to the "New Chat" state
+            }
         } catch (err: any) {
             console.error("[Sidebar] Error deleting chat:", err); // Keep error log
             setError(err.message || "Failed to delete chat");

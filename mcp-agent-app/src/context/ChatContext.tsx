@@ -65,13 +65,11 @@ interface ChatContextType {
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
 
-const initialMessages: MessageData[] = [
-    { sender: 'llm', text: "Welcome Allan! How can I assist you?" }
-];
+const initialMessages: MessageData[] = []; // Start with empty messages
 
 export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
     const [currentChatId, setCurrentChatId] = useState<string | null>(null);
-    const [messages, setMessages] = useState<MessageData[]>(initialMessages);
+    const [messages, setMessages] = useState<MessageData[]>([]); // Initialize with empty array
     const [refreshCounter, setRefreshCounter] = useState(0);
 
     // --- LLM Selection State ---
@@ -89,7 +87,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     const startNewChat = useCallback(() => {
         setCurrentChatId(null);
-        setMessages(initialMessages);
+        setMessages([]); // Set to empty array for new chat
         // Reset model to default when starting a new chat
         setCurrentModelId(googleProvider.defaultModelId);
     }, [googleProvider?.defaultModelId]); // Add dependency
@@ -131,7 +129,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 .filter((msg: MessageData | null): msg is MessageData => msg !== null);
 
             // Set messages and potentially the model ID if saved with the chat
-            setMessages(loadedMessages.length > 0 ? loadedMessages : initialMessages);
+            setMessages(loadedMessages.length > 0 ? loadedMessages : []); // Fallback to empty array
             // --- Load Model ID ---
             // Assuming ChatRecord will have an optional modelId field (add to type later)
             const loadedModelId = (chatData as any).modelId; // Use 'any' temporarily
@@ -173,10 +171,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 if (msg.sender === 'user') {
                     return { role: 'user', parts: [{ text: msg.text }] };
                 } else if (msg.sender === 'llm') {
-                    // Ensure we don't save the initial welcome message if nothing else happened
-                    if (currentChatId === null && messages.length === 1 && msg.text === initialMessages[0].text) {
-                        return null;
-                    }
+                    // No need to check for initial welcome message text anymore
                     return { role: 'model', parts: [{ text: msg.text }] };
                 }
                 return null; // Omit 'tool' messages
