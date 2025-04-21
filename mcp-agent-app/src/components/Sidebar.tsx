@@ -3,10 +3,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { MessageSquare, PanelLeftClose, PanelRightClose, BrainCircuit, Plus, Trash2, Loader2, RefreshCw, Save } from 'lucide-react'; // Added Save icon
-import { useChat, ChatMetadata } from '@/context/ChatContext';
+import { useChat, ChatMetadata, LlmProvider, LlmModel } from '@/context/ChatContext'; // Import LLM types
 
 const Sidebar: React.FC = () => {
-    const { startNewChat, loadChat, currentChatId, fetchChatList, refreshCounter, messages, saveCurrentChat } = useChat();
+    // Get LLM state from context
+    const {
+        startNewChat, loadChat, currentChatId, fetchChatList, refreshCounter, messages, saveCurrentChat,
+        llmConfig, currentProviderId, setCurrentProviderId, currentModelId, setCurrentModelId // Add provider state
+    } = useChat();
 
     const [isExpanded, setIsExpanded] = useState(true);
     const [hasMounted, setHasMounted] = useState(false);
@@ -14,6 +18,20 @@ const Sidebar: React.FC = () => {
     const [isLoading, setIsLoading] = useState(false); // Loading history list
     const [isSaving, setIsSaving] = useState(false); // Saving state for button
     const [error, setError] = useState<string | null>(null);
+
+    // Find the currently selected provider's config
+    const selectedProvider = llmConfig.providers.find(p => p.id === currentProviderId);
+
+    // Handler for provider change
+    const handleProviderChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+        const newProviderId = event.target.value;
+        setCurrentProviderId(newProviderId);
+        // Reset model to the default for the new provider
+        const newProviderConfig = llmConfig.providers.find(p => p.id === newProviderId);
+        if (newProviderConfig) {
+            setCurrentModelId(newProviderConfig.defaultModelId);
+        }
+    };
 
     // Load initial chat list and refresh when counter changes
     const loadInitialChats = useCallback(async () => {
@@ -46,7 +64,13 @@ const Sidebar: React.FC = () => {
             if (!response.ok) {
                 throw new Error(`Failed to delete chat: ${response.statusText}`);
             }
+            // Update local list *after* potential state reset
             setSavedChats(prevChats => prevChats.filter(chat => chat.id !== chatId));
+
+            // Check if the deleted chat was the currently active one
+            if (chatId === currentChatId) {
+                startNewChat(); // Reset the chat interface to the "New Chat" state
+            }
         } catch (err: any) {
             console.error("[Sidebar] Error deleting chat:", err); // Keep error log
             setError(err.message || "Failed to delete chat");
@@ -55,7 +79,10 @@ const Sidebar: React.FC = () => {
 
     // Save/Update handler - Uses existing title if updating
     const handleSaveClick = async () => {
-        if (messages.length <= 1 && currentChatId === null) {
+        // Check if there are any user or assistant messages to save
+        // Use 'assistant' role from AiMessage type
+        const hasMessagesToSave = messages.some(msg => msg.role === 'user' || msg.role === 'assistant');
+        if (!hasMessagesToSave && currentChatId === null) {
             alert("Nothing to save yet.");
             return;
         }
@@ -127,8 +154,53 @@ const Sidebar: React.FC = () => {
                     </button>
                 </div>
 
+                {/* --- Provider Selection Dropdown --- */}
+                {hasMounted && isExpanded && llmConfig.providers.length > 1 && (
+                    <div className="px-4 pb-2">
+                        <label htmlFor="provider-select" className="block mb-1 text-xs font-semibold text-gray-500 tracking-wider">
+                            Provider:
+                        </label>
+                        <select
+                            id="provider-select"
+                            value={currentProviderId}
+                            onChange={handleProviderChange}
+                            className="w-full p-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-blue-500 focus:border-blue-500"
+                        >
+                            {llmConfig.providers.map((provider: LlmProvider) => (
+                                <option key={provider.id} value={provider.id}>
+                                    {provider.name}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                )}
+                {/* --- End Provider Selection Dropdown --- */}
+
+                {/* --- Model Selection Dropdown (Dynamic) --- */}
+                {hasMounted && isExpanded && selectedProvider && (
+                    <div className="px-4 pb-2">
+                        <label htmlFor="model-select" className="block mb-1 text-xs font-semibold text-gray-500 tracking-wider">
+                            Model:
+                        </label>
+                        <select
+                            id="model-select"
+                            value={currentModelId}
+                            onChange={(e) => setCurrentModelId(e.target.value)}
+                            className="w-full p-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-blue-500 focus:border-blue-500"
+                        >
+                            {selectedProvider.models.map((model: LlmModel) => (
+                                <option key={model.id} value={model.id}>
+                                    {model.name} {/* Display model name */}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                )}
+                {/* --- End Model Selection Dropdown --- */}
+
+
                 {/* Chat History Section */}
-                <nav className="flex-grow p-4 pt-0 space-y-2">
+                <nav className="flex-grow p-4 pt-2 space-y-2"> {/* Adjusted pt-2 */}
                     {hasMounted && isExpanded && (
                         <h2 className="px-2 mb-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                             Chat History
@@ -181,7 +253,9 @@ const Sidebar: React.FC = () => {
 
             {/* Footer with Save/Update Button */}
             <div className="p-4 border-t border-gray-200 dark:border-gray-700 flex-shrink-0 space-y-2">
-                {messages.length > 1 && (
+                {/* Show button if there are user or assistant messages */}
+                {/* Use 'assistant' role from AiMessage type */}
+                {messages.some(msg => msg.role === 'user' || msg.role === 'assistant') && (
                     <button
                         onClick={handleSaveClick}
                         className={`flex items-center justify-center w-full p-2 space-x-3 rounded-md text-sm ${currentChatId

@@ -1,6 +1,6 @@
 import fs from 'fs/promises'; // Use promises API for async operations
 import path from 'path'; // Import path for resolving config file path
-import { McpConfig, McpServerConfig } from './types'; // Import types
+import { McpConfig } from './types'; // Import types
 
 // --- MCP Configuration Loading ---
 const MCP_CONFIG_PATH = path.resolve(process.cwd(), 'mcp-config.json');

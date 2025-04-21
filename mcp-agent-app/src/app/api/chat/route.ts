@@ -1,330 +1,313 @@
-import { NextResponse, NextRequest } from 'next/server'; // Added NextRequest
-import { GoogleGenAI, HarmCategory, HarmBlockThreshold, Content, Part, FunctionDeclaration, Tool, FunctionCallingConfigMode, Type } from '@google/genai';
-
-// Import types and refactored functions
-import { Message, RequestBody, McpConfig, McpServerConfig } from './lib/types';
-import { loadMcpConfig } from './lib/mcp-config-loader';
+import path from 'path';
+import { NextRequest, NextResponse } from 'next/server';
 import {
-    mapMessagesToGemini,
-    detectRelevantServers,
-    generateSystemPrompt,
-    tools,
-    formatToolResultForGemini
-} from './lib/gemini-helpers';
-import { executeMcpTool } from './lib/mcp-tool-executor';
+    streamText,
+    CoreMessage,
+    experimental_createMCPClient as createMCPClient,
+} from 'ai';
+// Import the Stdio Transport
+import { Experimental_StdioMCPTransport as StdioMCPTransport } from 'ai/mcp-stdio';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createOpenAI } from '@ai-sdk/openai';
+import { createAnthropic } from '@ai-sdk/anthropic';
+import { createXai } from '@ai-sdk/xai';
 
+import llmConfigData from '../../../../llm-config.json';
+
+// Import types
+import { RequestBody, McpConfig, McpServerConfig, LlmConfig, LlmProvider, LlmModel, McpToolConfig } from './lib/types'; // Removed Message import
+import { loadMcpConfig } from './lib/mcp-config-loader'; // Keep config loader
 
 // Load environment variables
 import dotenv from 'dotenv';
-import fs from 'fs/promises'; // Use promises API for async operations
-import path from 'path'; // Import path for resolving config file path
+dotenv.config({ path: '.env.local' });
 
-dotenv.config({ path: '.env.local' }); // Ensure .env.local is loaded if needed server-side
+// Load LLM config data
+const llmConfig: LlmConfig = llmConfigData as LlmConfig;
 
-const API_KEY = process.env.GOOGLE_API_KEY;
+// --- API Key Loading ---
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const XAI_API_KEY = process.env.XAI_API_KEY;
 
-if (!API_KEY) {
-    throw new Error("GOOGLE_API_KEY environment variable not set");
+// --- Log API Key Status (Masked) ---
+console.log(`[API Keys] Google: ${GOOGLE_API_KEY ? 'Loaded' : 'MISSING'}, OpenAI: ${OPENAI_API_KEY ? 'Loaded' : 'MISSING'}, Anthropic: ${ANTHROPIC_API_KEY ? 'Loaded' : 'MISSING'}, XAI: ${XAI_API_KEY ? 'Loaded' : 'MISSING'}`);
+// ---
+
+
+// --- Helper to prepare MCP Client Stdio Args ---
+// Helper as StdioMCPTransport doesn't handle templating/env resolution automatically. TODO: Refactor to use a more generic MCP transport if available in the future.
+function prepareStdioArgs(serverConfig: McpServerConfig): { command: string; args: string[]; env: Record<string, string> } {
+    const { command: commandConfig } = serverConfig;
+    let command: string;
+    let args: string[];
+    // Start with an empty environment, only add required vars
+    const childEnv: Record<string, string> = {};
+
+    // --- Determine Command and Arguments ---
+    const executableEnvVar = commandConfig.executableEnvVar;
+    const defaultExecutable = commandConfig.defaultExecutable;
+    const scriptDirEnvVar = commandConfig.scriptDirEnvVar; // Generic script dir var name from config
+    const argsTemplate = commandConfig.argsTemplate || [];
+
+    // Resolve executable path
+    command = (executableEnvVar && process.env[executableEnvVar]) || defaultExecutable;
+    if (!command) {
+        throw new Error(`Could not determine executable for MCP server ${serverConfig.id}. Checked env var '${executableEnvVar}' and default '${defaultExecutable}'.`);
+    }
+
+    // Resolve generic script directory if needed and make absolute
+    let scriptDir = scriptDirEnvVar ? process.env[scriptDirEnvVar] : undefined;
+    if (scriptDir) {
+        scriptDir = path.resolve(scriptDir); // Resolve to absolute path
+        console.log(`[prepareStdioArgs][${serverConfig.id}] Generic Script Dir Env Var ('${scriptDirEnvVar}'): Resolved Path = '${scriptDir}'`);
+    } else {
+        console.log(`[prepareStdioArgs][${serverConfig.id}] Generic Script Dir Env Var ('${scriptDirEnvVar}'): Not Found/Set`);
+    }
+    if (argsTemplate.includes('{SCRIPT_DIR}') && !scriptDir) {
+        const errorMsg = `Argument template for ${serverConfig.id} requires {SCRIPT_DIR}, but env var '${scriptDirEnvVar}' is not set.`;
+        console.error(`[prepareStdioArgs][${serverConfig.id}] ${errorMsg}`);
+        throw new Error(errorMsg);
+    }
+
+    // Substitute template variables
+    args = argsTemplate.map(originalArg => {
+        let processedArg = originalArg; // Start with the original argument
+
+        // --- GitHub PAT Substitution ---
+        if (serverConfig.id === 'github' && processedArg.includes('{GITHUB_PAT}')) {
+            const githubPat = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+            if (!githubPat) throw new Error("Missing GITHUB_PERSONAL_ACCESS_TOKEN env var for GitHub server.");
+            processedArg = processedArg.replace('{GITHUB_PAT}', githubPat);
+        }
+
+        // --- GSuite Substitutions ---
+        if (serverConfig.id === 'gsuite') {
+            const gsuiteScriptDirEnvVar = (commandConfig as any).scriptDirEnvVar ?? 'GSUITE_MCP_SCRIPT_DIR';
+            const gsuiteScriptDir = process.env[gsuiteScriptDirEnvVar];
+            const gauthFileEnvVar = (commandConfig as any).gauthFileEnvVar ?? 'GSUITE_GAUTH_FILE';
+            const gauthFile = process.env[gauthFileEnvVar];
+            const accountsFileEnvVar = (commandConfig as any).accountsFileEnvVar ?? 'GSUITE_ACCOUNTS_FILE';
+            const accountsFile = process.env[accountsFileEnvVar];
+            const credentialsDirEnvVar = (commandConfig as any).credentialsDirEnvVar ?? 'GSUITE_CREDENTIALS_DIR';
+            const credentialsDir = process.env[credentialsDirEnvVar];
+
+            let gsuiteSubstituted = false;
+            if (processedArg.includes('{GSUITE_MCP_SCRIPT_DIR}')) {
+                if (!gsuiteScriptDir) throw new Error(`GSuite arg template needs {GSUITE_MCP_SCRIPT_DIR}, but env var '${gsuiteScriptDirEnvVar}' is not set.`);
+                processedArg = processedArg.replace('{GSUITE_MCP_SCRIPT_DIR}', gsuiteScriptDir);
+                gsuiteSubstituted = true;
+            }
+            if (processedArg.includes('{GSUITE_GAUTH_FILE}')) {
+                if (!gauthFile) throw new Error(`GSuite arg template needs {GSUITE_GAUTH_FILE}, but env var '${gauthFileEnvVar}' is not set.`);
+                processedArg = processedArg.replace('{GSUITE_GAUTH_FILE}', gauthFile);
+                gsuiteSubstituted = true;
+            }
+            if (processedArg.includes('{GSUITE_ACCOUNTS_FILE}')) {
+                if (!accountsFile) throw new Error(`GSuite arg template needs {GSUITE_ACCOUNTS_FILE}, but env var '${accountsFileEnvVar}' is not set.`);
+                processedArg = processedArg.replace('{GSUITE_ACCOUNTS_FILE}', accountsFile);
+                gsuiteSubstituted = true;
+            }
+            if (processedArg.includes('{GSUITE_CREDENTIALS_DIR}')) {
+                if (!credentialsDir) throw new Error(`GSuite arg template needs {GSUITE_CREDENTIALS_DIR}, but env var '${credentialsDirEnvVar}' is not set.`);
+                processedArg = processedArg.replace('{GSUITE_CREDENTIALS_DIR}', credentialsDir);
+                gsuiteSubstituted = true;
+            }
+            if (gsuiteSubstituted) {
+                console.log(`[prepareStdioArgs] Substituted GSuite vars in arg: ${originalArg} -> ${processedArg}`);
+            }
+        }
+
+        // --- Generic {SCRIPT_DIR} Substitution (for non-GSuite/GitHub) ---
+        // Check if it hasn't already been substituted by GSuite logic
+        if (processedArg === '{SCRIPT_DIR}' && scriptDir) {
+            processedArg = scriptDir;
+            console.log(`[prepareStdioArgs] Substituted generic {SCRIPT_DIR} in arg: ${originalArg} -> ${processedArg}`);
+        }
+
+        // Log if no substitution occurred for a template-like string
+        if (processedArg === originalArg && originalArg.includes('{') && originalArg.includes('}')) {
+            console.warn(`[prepareStdioArgs] Arg '${originalArg}' looked like a template but no substitution was applied for server ${serverConfig.id}.`);
+        }
+
+        return processedArg; // Return the potentially modified argument
+    });
+
+    // Pass Thru ONLY Required Environment Variables specified in config
+    if (commandConfig.envVars) {
+        for (const envVarName of commandConfig.envVars) {
+            const value = process.env[envVarName];
+            if (value === undefined) {
+                // Throw error if required env var is missing
+                const errorMsg = `Required environment variable '${envVarName}' for MCP server ${serverConfig.id} is not set.`;
+                console.error(`[prepareStdioArgs][${serverConfig.id}] ${errorMsg}`);
+                throw new Error(errorMsg);
+            }
+            childEnv[envVarName] = value;
+            console.log(`[prepareStdioArgs][${serverConfig.id}] Added required env var: ${envVarName}`);
+        }
+    }
+    // Also ensure PATH is usually passed through, might be needed for `uv` or `docker`
+    if (process.env.PATH) {
+        childEnv['PATH'] = process.env.PATH;
+    }
+
+    // Return the minimal environment needed
+    return { command, args, env: childEnv };
 }
 
-const genAI = new GoogleGenAI({ apiKey: API_KEY }); // Correct instantiation
-
-
-const generationConfig = {
-    temperature: 0.9,
-    topK: 1,
-    topP: 1,
-    maxOutputTokens: 8192,
-};
-
-const safetySettings = [
-    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-];
-
-
-
-// Helper to format data for SSE
-const formatSseMessage = (type: string, data: any): string => {
-    return `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
-};
 
 export async function POST(request: NextRequest) {
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-        async start(controller) {
-            const enqueue = (type: string, data: any) => {
-                try {
-                    controller.enqueue(encoder.encode(formatSseMessage(type, data)));
-                } catch (e) {
-                    console.error("Error encoding/enqueuing SSE message:", e);
-                    // Optionally close stream here if encoding fails critically
-                }
-            };
+    try {
+        const body: RequestBody = await request.json();
+        const { messages, providerId: requestedProviderId, modelId: requestedModelId } = body;
 
+        if (!messages || messages.length === 0) {
+            return NextResponse.json({ error: 'No messages provided' }, { status: 400 });
+        }
+
+        // --- Determine Provider and Model ---
+        const providerIdToUse = requestedProviderId || 'xai';
+        const providerConfig = llmConfig.providers.find(p => p.id === providerIdToUse);
+        if (!providerConfig) {
+            throw new Error(`Configuration for provider '${providerIdToUse}' not found.`);
+        }
+        const defaultModelId = providerConfig.defaultModelId;
+        const modelIdToUse = requestedModelId && providerConfig.models.some(m => m.id === requestedModelId)
+            ? requestedModelId
+            : defaultModelId;
+        if (!modelIdToUse) {
+            throw new Error(`Could not determine model ID for provider '${providerIdToUse}'.`);
+        }
+        console.log(`Using Provider: ${providerIdToUse}, Model: ${modelIdToUse}`);
+
+        // --- Instantiate LLM Provider ---
+        let languageModel;
+        switch (providerIdToUse) {
+            case 'google':
+                if (!GOOGLE_API_KEY) throw new Error("GOOGLE_API_KEY not set");
+                languageModel = createGoogleGenerativeAI({ apiKey: GOOGLE_API_KEY })(modelIdToUse);
+                break;
+            case 'openai':
+                if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY not set");
+                languageModel = createOpenAI({ apiKey: OPENAI_API_KEY })(modelIdToUse);
+                break;
+            case 'anthropic':
+                if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set");
+                languageModel = createAnthropic({ apiKey: ANTHROPIC_API_KEY })(modelIdToUse);
+                break;
+            case 'xai':
+                if (!XAI_API_KEY) throw new Error("XAI_API_KEY not set");
+                languageModel = createXai({ apiKey: XAI_API_KEY })(modelIdToUse);
+                break;
+            default:
+                throw new Error(`Unsupported provider ID: ${providerIdToUse}`);
+        }
+
+        // --- Load MCP Config & Prepare Clients ---
+        const mcpConfig = await loadMcpConfig();
+        // Infer the client type using ReturnType on the awaited promise result
+        const mcpClients: Awaited<ReturnType<typeof createMCPClient>>[] = [];
+        const mcpToolsPromises = mcpConfig.servers.map(async (serverConfig) => {
+            console.log(`[MCP Init] Processing server: ${serverConfig.id}`);
             try {
-                const mcpConfig = await loadMcpConfig(); // Load MCP config
-                const body: RequestBody = await request.json();
-                const { messages } = body;
+                // Step 1: Use prepareStdioArgs to get resolved command, args, and env
+                const { command, args, env } = prepareStdioArgs(serverConfig);
 
-                if (!messages || messages.length === 0) {
-                    enqueue('error', { message: 'No messages provided' });
-                    controller.close();
-                    return;
-                }
-
-                const mappedMessages = mapMessagesToGemini(messages);
-
-                if (mappedMessages.length === 0) {
-                    enqueue('error', { message: 'Cannot start chat with empty mapped messages' });
-                    controller.close();
-                    return;
-                }
-
-                // Get the original text from the latest user message in the request body
-                const latestUserMessage = messages[messages.length - 1];
-                const promptText = latestUserMessage.text;
-
-                const latestMessage = mappedMessages[mappedMessages.length - 1]; // Keep this for chat history logic
-                let chatHistoryForStart = mappedMessages.slice(0, -1);
-
-                // Prepare history for startChat: Ensure it starts with 'user' or is empty.
-                if (chatHistoryForStart.length > 0 && chatHistoryForStart[0].role === 'model') {
-                    const firstUserIndex = chatHistoryForStart.findIndex(msg => msg.role === 'user');
-                    if (firstUserIndex !== -1) {
-                        chatHistoryForStart = chatHistoryForStart.slice(firstUserIndex);
-                    } else {
-                        chatHistoryForStart = [];
-                    }
-                }
-
-                // Detect relevant servers based on the prompt
-                const relevantServerIds = detectRelevantServers(promptText, mcpConfig);
-
-                // Generate the dynamic system prompt using the helper function and relevant server IDs
-                const dynamicSystemPrompt = generateSystemPrompt(mcpConfig, relevantServerIds);
-                console.log("Using Dynamic System Prompt:", dynamicSystemPrompt); // Keep log for debugging
-
-                // Create the system instruction object for Gemini
-                const systemInstruction: Content = { role: 'system', parts: [{ text: dynamicSystemPrompt }] }; // Use 'system' role for system instructions
-
-                const chat = genAI.chats.create({
-                    model: "gemini-2.0-flash-001",
-                    history: chatHistoryForStart,
-                    config: {
-                        ...generationConfig,
-                        safetySettings,
-                        tools: tools, // Use the renamed 'tools' constant
-                        systemInstruction: systemInstruction,
-                        // toolConfig: { functionCallingConfig: { mode: FunctionCallingConfigMode.ANY } } // Consider ANY mode if AUTO struggles with tool calls
-                    }
+                const mcpClient = await createMCPClient({
+                    transport: new StdioMCPTransport({
+                        command: command, // Use resolved command
+                        args: args,     // Use resolved args
+                        env: env,       // Use filtered env
+                    }),
+                    // initializeParams: { ... } // Add if needed later
                 });
+                mcpClients.push(mcpClient); // Store the client instance
 
-                // --- Start Conversation Loop ---
-                let currentPrompt: string | Part[] = latestMessage.parts ?? [];
-                let safetyAlert = false;
+                const tools = await mcpClient.tools(); // Fetch tools
 
-                // Limit conversation turns to prevent infinite loops or excessive cost
-                for (let i = 0; i < 5; i++) {
-                    console.log(`--- Loop ${i + 1}: Sending to Gemini ---`);
-                    enqueue('status', { message: `Thinking... (Turn ${i + 1})` });
-
-                    // Prepare parts for sendMessageStream
-                    const messageToSendParts: Part[] = [];
-                    if (typeof currentPrompt === 'string') {
-                        messageToSendParts.push({ text: currentPrompt });
-                    } else if (Array.isArray(currentPrompt)) {
-                        currentPrompt.forEach(part => {
-                            messageToSendParts.push(part);
-                        });
-                    }
-
-                    // Use sendMessageStream - ensure message is in the correct format
-                    // The message property should contain the parts array or a string
-                    const messageForStream = { message: messageToSendParts };
-                    const resultStream = await chat.sendMessageStream(messageForStream);
-
-
-                    let accumulatedText = ""; // Accumulate text chunks for this turn
-                    let functionCallDetected = false;
-                    const toolResponses: Part[] = []; // Store tool responses for this turn
-
-                    // Process the stream
-                    for await (const response of resultStream) {
-                        // --- Response Validation and Safety Checks ---
-                        if (!response.candidates || response.candidates.length === 0) {
-                            console.error('Gemini API stream response missing candidates:', response);
-                            if (response.promptFeedback?.blockReason) {
-                                console.warn(`Prompt blocked due to ${response.promptFeedback.blockReason}`);
-                                safetyAlert = true;
-                                enqueue('error', { message: `Prompt blocked due to ${response.promptFeedback.blockReason}` });
-                                controller.close(); return;
-                            }
-                            enqueue('error', { message: 'LLM returned no candidates or unexpected response structure' });
-                            controller.close(); return;
-                        }
-
-                        if (response.promptFeedback?.blockReason || response.candidates?.[0]?.finishReason === 'SAFETY') {
-                            console.warn("Gemini response blocked due to safety settings.");
-                            safetyAlert = true;
-                            enqueue('error', { message: "Response blocked by safety settings." });
-                            controller.close(); return;
-                        }
-
-                        // --- Function Call Handling ---
-                        const functionCallParts = response.candidates?.[0]?.content?.parts?.filter((part: Part) => !!part.functionCall) ?? [];
-                        const functionCalls = functionCallParts.map((part: Part) => part.functionCall).filter((fc): fc is NonNullable<Part['functionCall']> => !!fc);
-
-                        if (functionCalls.length > 0) {
-                            functionCallDetected = true; // Mark that a function call happened in this stream response
-                            console.log("Function call(s) detected in stream:", JSON.stringify(functionCalls, null, 2));
-
-                            // Process all function calls requested in this chunk (usually just one per chunk)
-                            for (const functionCall of functionCalls) {
-                                const requestedToolName = functionCall.name;
-                                const toolArgs = functionCall.args;
-                                let formattedResponsePart: Part;
-
-                                if (!requestedToolName) {
-                                    console.error("Function call received without a name:", JSON.stringify(functionCall, null, 2));
-                                    formattedResponsePart = formatToolResultForGemini("unknown_tool", { error: "Function call received without a tool name." });
-                                } else if (requestedToolName === "use_mcp_tool") {
-                                    const { serverName, toolName: actualToolName, arguments: actualArgs } = toolArgs ?? {};
-
-                                    if (!serverName || !actualToolName) {
-                                        console.error("Missing serverName or toolName for use_mcp_tool:", toolArgs);
-                                        formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: "Missing required parameters: serverName and/or toolName." });
-                                    } else {
-                                        enqueue('log', { message: `Executing tool: ${serverName}/${actualToolName}...` });
-                                        console.log(`Attempting to execute MCP tool: Server='${serverName}', Tool='${actualToolName}', Args=`, actualArgs);
-                                        const serverConfig = mcpConfig.servers.find(s => s.id === serverName);
-
-                                        if (!serverConfig) {
-                                            console.error(`MCP Server config not found for ID: ${serverName}`);
-                                            formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: `Configuration for MCP server '${serverName}' not found.` });
-                                            enqueue('error', { message: `Configuration for MCP server '${serverName}' not found.` });
-                                        } else {
-                                            const toolExists = serverConfig.tools.some(t => t.name === actualToolName);
-                                            if (!toolExists) {
-                                                console.error(`Tool '${actualToolName}' not found in configuration for server '${serverName}'.`);
-                                                formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: `Tool '${actualToolName}' is not defined for server '${serverName}'.` });
-                                                enqueue('error', { message: `Tool '${actualToolName}' is not defined for server '${serverName}'.` });
-                                            } else if (typeof actualToolName !== 'string' || actualToolName === '') {
-                                                console.error(`Invalid tool name provided for server '${serverName}':`, actualToolName);
-                                                formattedResponsePart = formatToolResultForGemini(requestedToolName, { error: `Invalid tool name provided.` });
-                                                enqueue('error', { message: `Invalid tool name provided.` });
-                                            } else {
-                                                try {
-                                                    const toolResult = await executeMcpTool(serverConfig, actualToolName, (actualArgs ?? {}) as any);
-                                                    console.log(`executeMcpTool call successful for ${serverName}/${actualToolName}. Result:`, toolResult);
-                                                    enqueue('log', { message: `Tool ${serverName}/${actualToolName} executed successfully.` }); // Keep log event
-
-                                                    // --- Add tool_completed event ---
-                                                    const summary = `Used ${serverName}: ${actualToolName.replace(/_/g, ' ')}`;
-                                                    enqueue('tool_completed', { summary: summary });
-                                                    // --- End tool_completed event ---
-
-                                                    formattedResponsePart = {
-                                                        functionResponse: {
-                                                            name: "use_mcp_tool", // Still need to send the result back to Gemini
-                                                            response: { content: toolResult },
-                                                        },
-                                                    };
-                                                } catch (error: any) {
-                                                    console.error(`executeMcpTool call failed for ${serverName}/${actualToolName}: ${error.message}`, error);
-                                                    enqueue('error', { message: `Tool execution failed: ${error.message}` });
-                                                    formattedResponsePart = {
-                                                        functionResponse: {
-                                                            name: "use_mcp_tool",
-                                                            response: { content: { error: `Tool execution failed: ${error.message}` } },
-                                                        },
-                                                    };
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    console.warn(`Received call for unhandled tool: ${requestedToolName}`);
-                                    enqueue('log', { message: `Warning: Received call for unhandled tool: ${requestedToolName}` });
-                                    formattedResponsePart = {
-                                        functionResponse: {
-                                            name: "use_mcp_tool",
-                                            response: { content: { error: `Tool '${requestedToolName}' is not implemented or recognized.` } },
-                                        },
-                                    };
-                                }
-                                toolResponses.push(formattedResponsePart);
-                            } // End loop over functionCalls in this chunk
-                        } // End if functionCalls.length > 0
-
-                        // --- Text Chunk Handling ---
-                        const textParts = response.candidates?.[0]?.content?.parts?.filter((part: Part) => !!part.text) ?? [];
-                        const chunkText = textParts.map((part: Part) => part.text).join("");
-
-                        if (chunkText) {
-                            accumulatedText += chunkText;
-                            enqueue('llm_chunk', { text: chunkText }); // Stream the chunk
-                        }
-
-                    } // End for await...of loop for stream chunks
-
-                    // --- After processing the entire stream for this turn ---
-                    if (functionCallDetected) {
-                        // If function calls happened, prepare for the next loop iteration
-                        currentPrompt = toolResponses; // Send responses back to Gemini
-                        continue; // Go to the next loop iteration
-                    } else {
-                        // If no function calls, this turn resulted in text (or an error handled above)
-                        if (accumulatedText) {
-                            console.log("Final Gemini Text Response (from stream):", accumulatedText);
-                            // No need to enqueue 'final' separately if chunks were sent
-                            // enqueue('final', { text: accumulatedText }); // Optional: Send a final complete message if needed
-                            controller.close(); // Close the stream after final text
-                            return;
-                        } else {
-                            // Handle cases where the stream ended without text or function calls
-                            console.warn(`Gemini stream (Turn ${i + 1}) ended without text or function calls.`);
-                            // Check finishReason if available (might need to access last response chunk)
-                            // For simplicity, assume an error if nothing was produced
-                            enqueue('error', { message: 'LLM stream ended unexpectedly without generating text or calling functions.' });
-                            controller.close();
-                            return;
-                        }
-                    } // End of function call vs text response handling for the turn
-
-                } // End of conversation loop (for)
-
-                // --- Fallback if loop completes without returning ---
-                console.warn("Conversation loop completed maximum iterations without returning a final response.");
-                if (safetyAlert) {
-                    enqueue('error', { message: "I cannot provide a response due to safety concerns encountered earlier." });
-                } else {
-                    enqueue('error', { message: 'Agent reached maximum interaction depth without a final response' });
-                }
-                controller.close();
-
-            } catch (error) { // Catch errors from request parsing, setup, or unexpected issues
-                console.error('Error processing chat stream request:', error);
-                const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-                // Try to enqueue error before closing
-                try {
-                    enqueue('error', { message: `Failed to process chat request: ${errorMessage}` });
-                } catch (enqueueError) {
-                    console.error("Failed to enqueue final error message:", enqueueError);
-                }
-                controller.close();
+                return tools;
+            } catch (error) {
+                console.error(`Failed to create MCP client or fetch tools for server ${serverConfig.id}:`, error);
+                // Step 2: Re-throw the error to make initialization failures explicit
+                throw new Error(`Failed to initialize MCP server ${serverConfig.id}: ${error instanceof Error ? error.message : String(error)}`);
             }
-        } // End of stream.start
-    }); // End of new ReadableStream
+        });
 
-    // Return the stream response
-    return new Response(stream, {
-        headers: {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-        },
-    });
+        // --- Merge Tools from All Clients ---
+        const allToolSets = await Promise.all(mcpToolsPromises);
+        const mergedTools = allToolSets.reduce((acc, toolSet) => {
+            // Basic merge, warn on overwrite
+            for (const toolName in toolSet) {
+                if (acc[toolName]) {
+                    console.warn(`Duplicate tool name '${toolName}' encountered during MCP client merge. Overwriting previous definition.`);
+                }
+                acc[toolName] = toolSet[toolName];
+            }
+            return acc;
+        }, {});
+
+        // --- Generate System Prompt ---
+        // Using simplified prompt for now
+        const dynamicSystemPrompt = "You are a helpful and informative assistant. You can answer questions, generate creative text formats, and provide information on a wide range of topics. You have access to external tools which include the ones available via MCP(Model Context Protocol) servers.";
+
+        // --- Call Vercel AI SDK streamText ---
+        let result;
+        try {
+
+            // WORKAROUND: Disable tools entirely for Anthropic due to SDK incompatibility
+            let toolsForStream = mergedTools;
+            if (['anthropic'].includes(providerIdToUse)) {
+                console.warn(`[Chat API] WORKAROUND: Disabling tools for ${providerIdToUse} due to SDK incompatibility with stdio tools.`);
+                toolsForStream = {};
+            }
+
+            result = await streamText({
+                model: languageModel,
+                system: dynamicSystemPrompt,
+                messages: messages, // Pass messages directly from request body
+                tools: toolsForStream, // Use conditional tools object
+                maxSteps: 5, // Enable multi-step tool calling (will be ineffective for Anthropic if tools are {})
+                // Add onFinish callback to close MCP clients
+                onFinish: async () => {
+                    console.log("Stream finished.");
+
+                    // Close MCP clients
+                    console.log("[onFinish] Closing MCP clients...");
+                    const closePromises = mcpClients.map(async (client, index) => {
+                        try {
+                            await client.close();
+                        } catch (closeError) {
+                            console.error(`[onFinish] Error closing MCP client ${index + 1}:`, closeError);
+                        }
+                    });
+                    await Promise.all(closePromises);
+                    console.log("[onFinish] All MCP clients closed.");
+                },
+            });
+        } catch (streamError) {
+            // Catch errors specifically from streamText
+            console.error('[Chat API] Error during streamText execution:', streamError);
+            // Ensure MCP clients are closed even if streamText fails
+            const closePromises = mcpClients.map(client => client.close().catch(e => console.error("Error closing MCP client after streamText error:", e)));
+            await Promise.all(closePromises);
+            throw streamError;
+        }
+
+
+        // --- Return Streaming Response ---
+        return new Response(result.toDataStream(), {
+            headers: {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+            },
+        });
+
+    } catch (error) {
+        console.error('[Chat API Error]', error);
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+        return NextResponse.json({ error: `Failed to process chat request: ${errorMessage}` }, { status: 500 });
+    }
 }

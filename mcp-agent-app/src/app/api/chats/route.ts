@@ -1,12 +1,13 @@
 import { NextResponse, NextRequest } from 'next/server';
-import prisma from '@/lib/prisma'; // Use the centralized Prisma client
-import { Content } from '@google/genai'; // Import Content type for validation/casting
+import prisma from '@/lib/prisma';
 
 // Define the expected structure for the POST request body
 interface CreateChatRequestBody {
     title: string;
-    history: Content[]; // Expecting the full Gemini history format
+    history: any[]; // Use any[] as history format might vary (CoreMessage)
     systemPrompt?: string;
+    providerId?: string; // Add optional providerId
+    modelId?: string; // Add optional modelId
     // userId?: string; // Add later if implementing user accounts
 }
 
@@ -53,6 +54,8 @@ export async function POST(request: NextRequest) {
                 title: body.title,
                 history: body.history as any, // Cast to 'any' for Prisma Json type
                 systemPrompt: body.systemPrompt,
+                providerId: body.providerId, // Add providerId
+                modelId: body.modelId, // Add modelId
             },
         });
         console.log(`[API POST /api/chats] Created new chat with ID: ${newChat.id}`);

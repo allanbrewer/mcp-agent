@@ -1,6 +1,5 @@
 import { NextResponse, NextRequest } from 'next/server';
 import prisma from '@/lib/prisma';
-import { Content } from '@google/genai';
 
 // Define a type for the params object expected in the context
 interface RouteParams {
@@ -99,9 +98,11 @@ export async function PUT(request: NextRequest, context: { params: RouteParams }
         const updatedChat = await prisma.chat.update({
             where: { id: chatId },
             data: {
-                title: body.title,
+                title: body.title, // Update title if provided
                 history: body.history as any,
                 systemPrompt: body.systemPrompt,
+                providerId: body.providerId, // Update providerId if provided
+                modelId: body.modelId, // Update modelId if provided
             },
         });
         console.log(`[API PUT /api/chats/[chatId]] Updated chat: ${chatId}`);

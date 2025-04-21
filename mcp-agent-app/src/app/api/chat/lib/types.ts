@@ -1,12 +1,10 @@
-// Define the structure for a message in the chat history
-export interface Message {
-    sender: 'user' | 'llm';
-    text: string;
-}
+import { CoreMessage } from 'ai'; // Import CoreMessage
 
-// Define the structure for the incoming request body
+// Define the structure for the incoming request body using CoreMessage
 export interface RequestBody {
-    messages: Message[];
+    messages: CoreMessage[]; // Use CoreMessage array
+    modelId?: string; // Add optional modelId
+    providerId?: string; // Add optional providerId
 }
 
 // --- MCP Server Configuration Interfaces ---
@@ -32,3 +30,19 @@ export interface McpServerConfig {
 // Define the overall structure of the config file
 export interface McpConfig { servers: McpServerConfig[]; }
 // --- End MCP Server Configuration Interfaces ---
+
+// --- LLM Configuration Interfaces ---
+export interface LlmModel {
+    id: string;
+    name: string;
+}
+export interface LlmProvider {
+    id: string;
+    name: string;
+    models: LlmModel[];
+    defaultModelId: string;
+}
+export interface LlmConfig {
+    providers: LlmProvider[];
+}
+// --- End LLM Configuration Interfaces ---
