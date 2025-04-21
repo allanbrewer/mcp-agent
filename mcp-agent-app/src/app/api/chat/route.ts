@@ -1,10 +1,9 @@
-import path from 'path'; // Import path for resolving paths
+import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
 import {
     streamText,
     CoreMessage,
-    experimental_createMCPClient as createMCPClient, // Import MCP Client creator
-    // MCPClient type is not exported, use ReturnType later
+    experimental_createMCPClient as createMCPClient,
 } from 'ai';
 // Import the Stdio Transport
 import { Experimental_StdioMCPTransport as StdioMCPTransport } from 'ai/mcp-stdio';
@@ -12,7 +11,6 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createXai } from '@ai-sdk/xai';
-// import { z } from 'zod'; // No longer needed for manual schema conversion
 
 import llmConfigData from '../../../../llm-config.json';
 
@@ -39,9 +37,8 @@ console.log(`[API Keys] Google: ${GOOGLE_API_KEY ? 'Loaded' : 'MISSING'}, OpenAI
 
 
 // --- Helper to prepare MCP Client Stdio Args ---
-// Re-introducing this helper as StdioMCPTransport doesn't handle templating/env resolution automatically.
+// Helper as StdioMCPTransport doesn't handle templating/env resolution automatically. TODO: Refactor to use a more generic MCP transport if available in the future.
 function prepareStdioArgs(serverConfig: McpServerConfig): { command: string; args: string[]; env: Record<string, string> } {
-    console.log(`[prepareStdioArgs] Preparing args for server: ${serverConfig.id}`);
     const { command: commandConfig } = serverConfig;
     let command: string;
     let args: string[];
@@ -83,7 +80,6 @@ function prepareStdioArgs(serverConfig: McpServerConfig): { command: string; arg
             const githubPat = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
             if (!githubPat) throw new Error("Missing GITHUB_PERSONAL_ACCESS_TOKEN env var for GitHub server.");
             processedArg = processedArg.replace('{GITHUB_PAT}', githubPat);
-            console.log(`[prepareStdioArgs] Substituted {GITHUB_PAT} in arg: ${originalArg} -> ${processedArg}`);
         }
 
         // --- GSuite Substitutions ---
@@ -165,14 +161,7 @@ function prepareStdioArgs(serverConfig: McpServerConfig): { command: string; arg
 export async function POST(request: NextRequest) {
     try {
         const body: RequestBody = await request.json();
-        // Log the raw body to see exactly what's coming from the frontend
-        console.log("[Chat API] Received Body:", JSON.stringify(body, null, 2));
         const { messages, providerId: requestedProviderId, modelId: requestedModelId } = body;
-
-        // --- Log received IDs ---
-        console.log(`[Chat API] Parsed providerId: ${requestedProviderId}`);
-        console.log(`[Chat API] Parsed modelId: ${requestedModelId}`);
-        // ---
 
         if (!messages || messages.length === 0) {
             return NextResponse.json({ error: 'No messages provided' }, { status: 400 });
@@ -226,7 +215,6 @@ export async function POST(request: NextRequest) {
                 // Step 1: Use prepareStdioArgs to get resolved command, args, and env
                 const { command, args, env } = prepareStdioArgs(serverConfig);
 
-                console.log(`[MCP Init][${serverConfig.id}] Attempting to create client...`);
                 const mcpClient = await createMCPClient({
                     transport: new StdioMCPTransport({
                         command: command, // Use resolved command
@@ -235,18 +223,15 @@ export async function POST(request: NextRequest) {
                     }),
                     // initializeParams: { ... } // Add if needed later
                 });
-                console.log(`[MCP Init][${serverConfig.id}] Client created successfully.`);
                 mcpClients.push(mcpClient); // Store the client instance
 
-                console.log(`[MCP Init][${serverConfig.id}] Attempting to fetch tools...`);
                 const tools = await mcpClient.tools(); // Fetch tools
-                console.log(`[MCP Init][${serverConfig.id}] Fetched ${Object.keys(tools).length} tools.`);
+
                 return tools;
             } catch (error) {
                 console.error(`Failed to create MCP client or fetch tools for server ${serverConfig.id}:`, error);
                 // Step 2: Re-throw the error to make initialization failures explicit
                 throw new Error(`Failed to initialize MCP server ${serverConfig.id}: ${error instanceof Error ? error.message : String(error)}`);
-                // return {}; // Old behavior: continue with empty tools
             }
         });
 
@@ -262,22 +247,20 @@ export async function POST(request: NextRequest) {
             }
             return acc;
         }, {});
-        console.log(`Total MCP tools merged: ${Object.keys(mergedTools).length}`);
 
         // --- Generate System Prompt ---
         // Using simplified prompt for now
-        const dynamicSystemPrompt = "You are a helpful and informative assistant. You can answer questions, generate creative text formats, and provide information on a wide range of topics. You have access to external tools which include the ones available via MCP(Model Context Protocol) servers."
+        const dynamicSystemPrompt = "You are a helpful and informative assistant. You can answer questions, generate creative text formats, and provide information on a wide range of topics. You have access to external tools which include the ones available via MCP(Model Context Protocol) servers.";
 
         // --- Call Vercel AI SDK streamText ---
         let result;
         try {
-            console.log(`[Chat API] Calling streamText with provider ${providerIdToUse}...`);
 
             // WORKAROUND: Disable tools entirely for Anthropic due to SDK incompatibility
             let toolsForStream = mergedTools;
-            if (['anthropic', 'openai'].includes(providerIdToUse)) {
+            if (['anthropic'].includes(providerIdToUse)) {
                 console.warn(`[Chat API] WORKAROUND: Disabling tools for ${providerIdToUse} due to SDK incompatibility with stdio tools.`);
-                toolsForStream = {}; // Disable tools
+                toolsForStream = {};
             }
 
             result = await streamText({
@@ -287,22 +270,14 @@ export async function POST(request: NextRequest) {
                 tools: toolsForStream, // Use conditional tools object
                 maxSteps: 5, // Enable multi-step tool calling (will be ineffective for Anthropic if tools are {})
                 // Add onFinish callback to close MCP clients
-                onFinish: async ({ text, toolCalls, toolResults, finishReason, usage, warnings }) => { // Keep onFinish args for potential future debugging
+                onFinish: async () => {
                     console.log("Stream finished.");
-                    console.log("[onFinish] Resolved Text:", text);
-                    console.log("[onFinish] Resolved Tool Calls:", JSON.stringify(toolCalls, null, 2));
-                    console.log("[onFinish] Resolved Tool Results:", JSON.stringify(toolResults, null, 2));
-                    console.log("[onFinish] Finish Reason:", finishReason);
-                    console.log("[onFinish] Usage:", JSON.stringify(usage, null, 2));
-                    console.log("[onFinish] Warnings:", JSON.stringify(warnings, null, 2));
 
                     // Close MCP clients
                     console.log("[onFinish] Closing MCP clients...");
                     const closePromises = mcpClients.map(async (client, index) => {
                         try {
-                            console.log(`[onFinish] Closing MCP client ${index + 1}...`);
                             await client.close();
-                            console.log(`[onFinish] MCP client ${index + 1} closed.`);
                         } catch (closeError) {
                             console.error(`[onFinish] Error closing MCP client ${index + 1}:`, closeError);
                         }
@@ -311,16 +286,12 @@ export async function POST(request: NextRequest) {
                     console.log("[onFinish] All MCP clients closed.");
                 },
             });
-            console.log("[Chat API] streamText call completed."); // Log after await
         } catch (streamError) {
             // Catch errors specifically from streamText
             console.error('[Chat API] Error during streamText execution:', streamError);
             // Ensure MCP clients are closed even if streamText fails
-            console.log("[streamText Error] Closing MCP clients...");
             const closePromises = mcpClients.map(client => client.close().catch(e => console.error("Error closing MCP client after streamText error:", e)));
             await Promise.all(closePromises);
-            console.log("[streamText Error] All MCP clients closed.");
-            // Re-throw the error to be caught by the main handler
             throw streamError;
         }
 

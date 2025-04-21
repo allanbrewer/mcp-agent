@@ -1,29 +1,37 @@
 # MCP Agent
 
-A web-based conversational agent powered by Google Gemini that can interact with various external services via Model Context Protocol (MCP) servers.
+A web-based conversational agent powered by various LLMs (Google Gemini, Anthropic Claude, OpenAI GPT, xAI Grok) via the Vercel AI SDK, capable of interacting with external services through Model Context Protocol (MCP) servers.
 
 ## Overview
 
-This project provides a chat interface where users can converse with Google Gemini. The agent can understand requests that require interaction with external tools (MCP Servers) and execute those actions.
+This project provides a chat interface where users can select an LLM provider and model, then converse with the chosen LLM. The agent leverages the Vercel AI SDK to handle multi-step tool execution, allowing the LLM to interact with configured MCP Servers (e.g., WhatsApp, GitHub, GSuite, Web Search) to fulfill user requests.
 
 ## Architecture
 
 The project consists of the following components:
 
-1.  **Frontend (`mcp-agent-app/`):** A Next.js application providing a React-based chat interface accessible at `http://localhost:3000` (or a similar port).
-2.  **Backend API (`mcp-agent-app/src/app/api/chat/route.ts`):** A Next.js API route that:
-    *   Manages the conversation flow with the frontend.
-    *   Communicates with the Google Gemini API using the `@google/genai` SDK.
+1.  **Frontend (`mcp-agent-app/`):** A Next.js application providing a React-based chat interface accessible at `http://localhost:3000`.
+    *   Uses `@ai-sdk/react`'s `useChat` hook for managing chat state and streaming responses.
+    *   Uses a React Context (`ChatContext`) to manage application state like the current chat ID, selected provider/model, and to provide access to the `useChat` hook's state and functions.
+    *   Includes a Sidebar for selecting LLM providers/models and managing saved chats.
+2.  **Chat API (`mcp-agent-app/src/app/api/chat/route.ts`):** A Next.js API route that:
+    *   Receives chat messages, provider ID, and model ID from the frontend.
+    *   Selects and instantiates the appropriate LLM provider (e.g., `@ai-sdk/google`, `@ai-sdk/anthropic`) based on the request.
     *   Loads MCP server configurations from `mcp-config.json`.
-    *   Generates a dynamic system prompt including descriptions of connected servers and available tools.
-    *   Defines a generic `use_mcp_tool` for Gemini Function Calling.
-    *   Handles `functionCall` responses from Gemini.
-    *   Executes MCP server commands using `child_process.spawn`.
-    *   Communicates with the spawned process via stdio using JSON-RPC.
-    *   Sends the formatted tool result back to Gemini in a conversational loop.
-    *   Returns the final text response from Gemini to the frontend.
-3.  **MCP Servers:** External processes (Python scripts, Docker containers) that implement the Model Context Protocol (MCP) and interact with specific external services (WhatsApp, GitHub, GSuite, etc.). The backend launches these servers using `child_process.spawn` and communicates with them via stdio/JSON-RPC.
-4.  **Configuration (`mcp-agent-app/mcp-config.json`):** A central JSON file defining the available MCP servers, their launch commands, and the tools they provide. This file is used for dynamic prompting and to configure the backend's execution logic.
+    *   Uses a helper (`prepareStdioArgs`) to resolve paths and environment variables for server commands.
+    *   Initializes MCP clients using `experimental_createMCPClient` and `Experimental_StdioMCPTransport` from `ai` and `ai/mcp-stdio`.
+    *   Fetches tool schemas directly from the initialized MCP clients using `mcpClient.tools()`.
+    *   Calls the Vercel AI SDK's `streamText` function, passing the selected language model, messages, and merged MCP tools.
+    *   Relies on `streamText` (with `maxSteps > 1`) to handle the multi-step conversation flow, including automatic tool calling via the MCP clients.
+    *   Includes a workaround to disable tools for Anthropic due to current SDK incompatibility with stdio tools.
+    *   Streams the response (text chunks, errors) back to the frontend using `result.toDataStream()`.
+    *   Closes MCP client connections in the `onFinish` callback.
+3.  **Chat Persistence API (`mcp-agent-app/src/app/api/chats/`):** Next.js API routes for saving, loading, listing, and deleting chat sessions using Prisma and a SQLite database. Stores chat history (`CoreMessage[]`), title, provider ID, and model ID.
+4.  **MCP Servers:** External processes (Python scripts, Docker containers) implementing the Model Context Protocol (MCP). The Chat API backend launches these servers via `StdioMCPTransport` based on `mcp-config.json`.
+5.  **Configuration:**
+    *   `mcp-agent-app/mcp-config.json`: Defines available MCP servers, launch commands, and tool schemas (though schemas are primarily discovered dynamically now).
+    *   `mcp-agent-app/llm-config.json`: Defines available LLM providers and their models for the frontend UI.
+    *   `mcp-agent-app/.env.local`: Stores API keys, tokens, and paths required by the backend and MCP servers.
 
 ## Setup
 
@@ -33,9 +41,9 @@ The project consists of the following components:
 *   [npm](https://www.npmjs.com/) or [yarn](https://yarnpkg.com/)
 *   [uv](https://astral.sh/uv) (Python package manager)
 *   [Docker](https://www.docker.com/get-started/) (for the GitHub MCP server)
-*   **Google Gemini API Key:** Obtainable from [Google AI Studio](https://aistudio.google.com/app/apikey). Set as `GOOGLE_API_KEY` in `.env.local`.
-*   **GitHub Personal Access Token (PAT):** [Create one here](https://github.com/settings/personal-access-tokens/new) with appropriate scopes (e.g., `repo`, `read:user`) for the actions you want the agent to perform. Set as `GITHUB_PERSONAL_ACCESS_TOKEN` in `.env.local`.
-*   **GSuite OAuth2 Credentials:** Follow the steps in the [GSuite MCP Server](#gsuite-mcp-server) section to create a Google Cloud project, enable the Gmail and Calendar APIs, configure the OAuth consent screen, create an OAuth client ID, and download the `.gauth.json` file.
+*   **LLM API Keys:** Obtain keys for the providers you want to use (Google Gemini, Anthropic Claude, OpenAI GPT, xAI Grok). Set them in `.env.local`.
+*   **GitHub Personal Access Token (PAT):** [Create one](https://github.com/settings/personal-access-tokens/new) with appropriate scopes (e.g., `repo`, `read:user`). Set as `GITHUB_PERSONAL_ACCESS_TOKEN` in `.env.local`.
+*   **GSuite OAuth2 Credentials:** Follow steps in the [GSuite MCP Server](#gsuite-mcp-server) section.
 
 **Installation & Configuration:**
 
@@ -51,104 +59,99 @@ The project consists of the following components:
     # or yarn install
     ```
 3.  **Configure Environment Variables:**
-    *   Create a file named `.env.local` in the `mcp-agent-app/` directory.
-    *   Add your API keys, tokens, and configuration paths to this file. Example:
+    *   Create `.env.local` in `mcp-agent-app/`.
+    *   Add API keys, tokens, and configuration paths. Example:
         ```dotenv
         # .env.local
+
+        # LLM API Keys (Add keys for providers you want to use)
         GOOGLE_API_KEY=YOUR_GEMINI_API_KEY
+        ANTHROPIC_API_KEY=YOUR_ANTHROPIC_API_KEY
+        OPENAI_API_KEY=YOUR_OPENAI_API_KEY
+        XAI_API_KEY=YOUR_XAI_API_KEY
+
+        # GitHub Token
         GITHUB_PERSONAL_ACCESS_TOKEN=YOUR_GITHUB_PAT
-        UV_PATH=/Users/yourusername/.local/bin/uv # Only if uv is not in your PATH
-        WHATSAPP_MCP_SCRIPT_DIR=/Users/yourusername/projects/mcp-agent/whatsapp-mcp/whatsapp-mcp-server
-        GSUITE_MCP_SCRIPT_DIR=/Users/yourusername/projects/mcp-agent/mcp-gsuite
-        GSUITE_GAUTH_FILE=/Users/yourusername/projects/mcp-agent/mcp-gsuite/.gauth.json
-        GSUITE_ACCOUNTS_FILE=/Users/yourusername/projects/mcp-agent/mcp-gsuite/.accounts.json
-        CREDENTIALS_DIR=/Users/yourusername/projects/mcp-agent/mcp-agent-app/gsuite-credentials
+
+        # Paths (Adjust if needed, especially if uv isn't in PATH)
+        # UV_PATH=/path/to/your/uv # Optional override
+        WHATSAPP_MCP_SCRIPT_DIR=../whatsapp-mcp/whatsapp-mcp-server # Relative paths often work
+        GSUITE_MCP_SCRIPT_DIR=../mcp-gsuite
+        GSUITE_GAUTH_FILE=../mcp-gsuite/.gauth.json
+        GSUITE_ACCOUNTS_FILE=../mcp-gsuite/.accounts.json
+        GSUITE_CREDENTIALS_DIR=../mcp-gsuite/gsuite-credentials # Directory for storing token.json
+        DDG_MCP_SCRIPT_DIR=../duckduckgo-mcp-server
+
+        # Database URL (SQLite)
+        DATABASE_URL="file:./dev.db"
         ```
-    *   Replace the placeholder values with your actual credentials and paths.
+    *   Replace placeholders. Ensure paths are correct relative to the `mcp-agent-app` directory or use absolute paths.
+4.  **Setup Database:**
+    ```bash
+    npx prisma migrate dev --name init # Or your latest migration name
+    ```
 
 **Running the Application:**
 
-1.  **Start the WhatsApp Go bridge:**
-    ```bash
-    cd whatsapp-mcp/whatsapp-bridge
-    go run main.go
-    ```
-    Scan the QR code with your WhatsApp mobile app when prompted.
-2.  **Start the GSuite MCP server:**
-    ```bash
-    cd mcp-gsuite
-    uv run mcp-gsuite --gauth-file .gauth.json --accounts-file .accounts.json --credentials-dir gsuite-credentials
-    ```
-3.  **Ensure Docker Desktop is running** (for the GitHub MCP server).
-4.  **Navigate to the Next.js app directory:**
+*   **MCP Servers:** Ensure the required MCP servers are running or accessible (e.g., Docker daemon running for GitHub, other servers started manually if needed, though the app attempts to start them via stdio).
+    *   *Note:* The current implementation starts MCP servers on demand via `StdioMCPTransport`. You generally don't need to start them manually unless debugging a specific server. Ensure prerequisites like the WhatsApp Go bridge *are* running if needed by a server.
+*   **Start the Next.js App:**
     ```bash
     cd mcp-agent-app
-    ```
-5.  **Start the development server:**
-    ```bash
     npm run dev
     # or yarn dev
     ```
-6.  Open your browser and go to `http://localhost:3000`.
+*   Open `http://localhost:3000`.
 
 ## Usage
 
-*   Interact with the chat interface as you would with Gemini.
-*   The agent will automatically determine when to use external tools based on your requests.
+*   Select your desired LLM Provider and Model from the sidebar dropdowns.
+*   Interact with the chat interface.
+*   The agent will use the selected LLM and attempt to use configured MCP tools when appropriate (except for Anthropic, where tools are currently disabled).
+*   Use the "Save Chat" button to persist conversations. Load previous chats from the history list.
 
 ### Example Prompts:
 
-*   `Send a WhatsApp message to [Recipient] saying "Hello from the MCP Agent!"`
-*   `List my recent WhatsApp chats`
-*   `Search my WhatsApp contacts for John`
-*   `Get issue number 1 from the octocat/Spoon-Knife repository`
-*   `What do I have on my calendar tomorrow in [Account Email Address]?`
-*   `Search my Gmail for emails from [Sender Email Address]`
+*   `Who are you?`
+*   `Search the web for the latest AI news.` (Uses ddg-search)
+*   `Get issue number 1 from the vercel/ai repository.` (Uses github)
+*   `Send a WhatsApp message to [Number] saying "Test from MCP Agent"` (Uses whatsapp)
+*   `What's on my main Google Calendar today?` (Uses gsuite)
 
 ## Adding New MCP Servers
 
-To add support for a new MCP server:
-
-1.  **Create a Project Directory:** Create a new directory for the server (e.g., `mcp-server-newservice`).
-2.  **Implement the MCP Server:** Develop the server using Python/FastAPI or another suitable language. Ensure it communicates via stdio/JSON-RPC and implements the required MCP handshake.
-3.  **Configure OAuth2 (if needed):** If the server requires OAuth2 authentication, follow the appropriate steps to create credentials and configure the server to use them.
-4.  **Define Tools:** Identify the tools offered by the server and their parameters.
-5.  **Update `mcp-config.json`:** Add a new entry to the `servers` array in `mcp-config.json` with the server's ID, description, command details, and tool definitions.
-6.  **Update Environment Variables:** Add any new required environment variables to `mcp-agent-app/.env.local`.
-7.  **Test:** Start the new MCP server and test the integration through the chat interface.
+1.  **Implement the MCP Server:** Develop a server communicating via stdio/JSON-RPC.
+2.  **Update `mcp-config.json`:** Add a server entry defining its `id`, `description`, and `command` (including `executableEnvVar`/`defaultExecutable`, `argsTemplate`, `scriptDirEnvVar`, `envVars`). Tool schemas in the config are less critical now as they are discovered dynamically, but descriptions are helpful.
+3.  **Update `.env.local`:** Add any required environment variables for the new server's command.
+4.  **Restart** the `mcp-agent-app`. The backend will attempt to connect and discover tools from the new server.
 
 ## Current MCP Servers
 
+*(Descriptions remain largely the same, but execution is now handled by `StdioMCPTransport`)*
+
 ### WhatsApp MCP Server
 
-*   **Source:** `whatsapp-mcp/` (cloned from `https://github.com/lharries/whatsapp-mcp`)
-*   **Execution:** Python script executed via `uv run`.
-*   **Communication:** Stdio / MCP (JSON-RPC)
-*   **Configuration:**
-    *   `UV_PATH` (optional): Path to the `uv` executable.
-    *   `WHATSAPP_MCP_SCRIPT_DIR`: Path to the `whatsapp-mcp/whatsapp-mcp-server` directory.
-    *   Requires scanning a QR code with your WhatsApp mobile app to authenticate the Go bridge.
+*   **Source:** `whatsapp-mcp/`
+*   **Execution:** Python script via `uv run`. Requires Go bridge running separately.
+*   **Config:** `WHATSAPP_MCP_SCRIPT_DIR`
 
 ### GitHub MCP Server
 
-*   **Source:** `github-mcp-server/` (cloned from `https://github.com/github/github-mcp-server`)
-    *   **Execution:** Docker container executed via `docker run`.
-*   **Communication:** Stdio / MCP (JSON-RPC)
-*   **Configuration:**
-    *   `GITHUB_PERSONAL_ACCESS_TOKEN`: GitHub Personal Access Token with appropriate scopes (e.g., `repo`, `read:user`).
+*   **Source:** Docker Image (`ghcr.io/github/github-mcp-server`)
+*   **Execution:** Docker container via `docker run`. Requires Docker daemon running.
+*   **Config:** `GITHUB_PERSONAL_ACCESS_TOKEN`
 
 ### GSuite MCP Server
 
-*   **Source:** `mcp-gsuite/` (cloned from `https://github.com/MarkusPfundstein/mcp-gsuite`)
-*   **Execution:** Python script executed via `uv run`.
-*   **Communication:** Stdio / MCP (JSON-RPC)
-*   **Configuration:**
-    *   `UV_PATH` (optional): Path to the `uv` executable.
-    *   `GSUITE_MCP_SCRIPT_DIR`: Path to the `mcp-gsuite` directory.
-    *   `GSUITE_GAUTH_FILE`: Path to the `.gauth.json` file (OAuth2 client configuration).
-    *   `GSUITE_ACCOUNTS_FILE`: Path to the `.accounts.json` file (account information).
-    *   `CREDENTIALS_DIR`: Path to the directory where OAuth credentials will be stored.
-    *   Requires OAuth2 setup in the Google Cloud Console.
+*   **Source:** `mcp-gsuite/`
+*   **Execution:** Python script via `uv run`.
+*   **Config:** `GSUITE_MCP_SCRIPT_DIR`, `GSUITE_GAUTH_FILE`, `GSUITE_ACCOUNTS_FILE`, `GSUITE_CREDENTIALS_DIR`. Requires OAuth2 setup.
+
+### DuckDuckGo Search MCP Server
+
+*   **Source:** `duckduckgo-mcp-server/`
+*   **Execution:** Python module via `uv run`.
+*   **Config:** `DDG_MCP_SCRIPT_DIR`
 
 ## File and Folder Structure
 
@@ -156,32 +159,44 @@ To add support for a new MCP server:
 mcp-agent/ (Project Root)
 ├── .gitignore
 ├── LICENSE
-├── PLAN.md (This file - outlining the project plan)
-├── README.md (This file - project documentation)
+├── README.md (This file)
+├── docs/ (Additional documentation)
 ├── mcp-agent-app/ (Next.js Application)
-│   ├── .env.local (Environment variables)
-│   ├── mcp-config.json (MCP server configuration)
-│   ├── next.config.js
+│   ├── .env.local (API Keys, Paths, DB URL)
+│   ├── llm-config.json (LLM Provider/Model definitions for UI)
+│   ├── mcp-config.json (MCP server command configurations)
+│   ├── next.config.ts
 │   ├── package.json
+│   ├── prisma/
+│   │   └── schema.prisma (Database schema)
+│   │   └── migrations/
 │   ├── src/
 │   │   ├── app/
-│   │   │   └── api/chat/route.ts (Next.js API route - main backend logic)
-│   │   └── components/ (React components for the chat interface)
-├── whatsapp-mcp/ (WhatsApp MCP Server - cloned from GitHub)
-│   ├── whatsapp-bridge/ (Go component)
-│   └── whatsapp-mcp-server/ (Python component)
-├── mcp-gsuite/ (GSuite MCP Server - cloned from GitHub)
-│   ├── ... (Python code, configuration files)
-└── github-mcp-server/ (GitHub MCP Server - cloned from GitHub)
-    ├── ... (Go code, Dockerfile)
+│   │   │   ├── api/
+│   │   │   │   ├── chat/route.ts (Main chat API, uses Vercel AI SDK)
+│   │   │   │   └── chats/ (API routes for saving/loading chats)
+│   │   │   └── page.tsx (Main page component)
+│   │   ├── components/ (React components: ChatInterface, Sidebar, etc.)
+│   │   ├── context/
+│   │   │   └── ChatContext.tsx (Manages app state, integrates useChat hook)
+│   │   └── lib/
+│   │       └── prisma.ts (Prisma client instance)
+│   └── ... (Other Next.js files)
+├── duckduckgo-mcp-server/
+├── github-mcp-server/ (Source code, not directly run if using Docker image)
+├── mcp-gsuite/
+└── whatsapp-mcp/
+    ├── whatsapp-bridge/ (Go component - needs separate execution)
+    └── whatsapp-mcp-server/ (Python component)
+
 ```
 
 ## Debugging
 
-*   Check the terminal logs for both the Next.js server and the MCP servers for any errors.
-*   Use the MCP Inspector (https://github.com/modelcontextprotocol/inspector) for debugging stdio communication.
-*   Ensure all required environment variables are set correctly.
-*   Verify that the OAuth2 credentials for GSuite are properly configured.
+*   Check terminal logs for the Next.js server (`npm run dev`). Look for API key status, provider/model usage, MCP init steps, and any errors during `streamText`.
+*   Check browser console logs for context actions and potential frontend errors.
+*   If an MCP server fails to initialize, check the `prepareStdioArgs` logs and ensure the paths and environment variables in `.env.local` are correct.
+*   Verify API keys and tokens.
 
 ## License
 

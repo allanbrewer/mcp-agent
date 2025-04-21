@@ -1,11 +1,5 @@
 import { CoreMessage } from 'ai'; // Import CoreMessage
 
-// Remove old Message interface (no longer needed)
-// export interface Message {
-//     sender: 'user' | 'llm';
-//     text: string;
-// }
-
 // Define the structure for the incoming request body using CoreMessage
 export interface RequestBody {
     messages: CoreMessage[]; // Use CoreMessage array

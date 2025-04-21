@@ -1,6 +1,5 @@
 import { NextResponse, NextRequest } from 'next/server';
 import prisma from '@/lib/prisma';
-import { Content } from '@google/genai';
 
 // Define a type for the params object expected in the context
 interface RouteParams {

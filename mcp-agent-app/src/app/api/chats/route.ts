@@ -1,6 +1,5 @@
 import { NextResponse, NextRequest } from 'next/server';
-import prisma from '@/lib/prisma'; // Use the centralized Prisma client
-import { Content } from '@google/genai'; // Import Content type for validation/casting
+import prisma from '@/lib/prisma';
 
 // Define the expected structure for the POST request body
 interface CreateChatRequestBody {
