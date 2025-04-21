@@ -102,6 +102,7 @@ export async function PUT(request: NextRequest, context: { params: RouteParams }
                 title: body.title, // Update title if provided
                 history: body.history as any,
                 systemPrompt: body.systemPrompt,
+                providerId: body.providerId, // Update providerId if provided
                 modelId: body.modelId, // Update modelId if provided
             },
         });

@@ -165,11 +165,13 @@ function prepareStdioArgs(serverConfig: McpServerConfig): { command: string; arg
 export async function POST(request: NextRequest) {
     try {
         const body: RequestBody = await request.json();
+        // Log the raw body to see exactly what's coming from the frontend
+        console.log("[Chat API] Received Body:", JSON.stringify(body, null, 2));
         const { messages, providerId: requestedProviderId, modelId: requestedModelId } = body;
 
         // --- Log received IDs ---
-        console.log(`[Chat API] Received providerId: ${requestedProviderId}`);
-        console.log(`[Chat API] Received modelId: ${requestedModelId}`);
+        console.log(`[Chat API] Parsed providerId: ${requestedProviderId}`);
+        console.log(`[Chat API] Parsed modelId: ${requestedModelId}`);
         // ---
 
         if (!messages || messages.length === 0) {
@@ -177,7 +179,7 @@ export async function POST(request: NextRequest) {
         }
 
         // --- Determine Provider and Model ---
-        const providerIdToUse = requestedProviderId || 'google';
+        const providerIdToUse = requestedProviderId || 'xai';
         const providerConfig = llmConfig.providers.find(p => p.id === providerIdToUse);
         if (!providerConfig) {
             throw new Error(`Configuration for provider '${providerIdToUse}' not found.`);
@@ -273,8 +275,8 @@ export async function POST(request: NextRequest) {
 
             // WORKAROUND: Disable tools entirely for Anthropic due to SDK incompatibility
             let toolsForStream = mergedTools;
-            if (providerIdToUse === 'anthropic') {
-                console.warn("[Chat API] WORKAROUND: Disabling tools for Anthropic provider due to SDK incompatibility with stdio tools.");
+            if (['anthropic', 'openai'].includes(providerIdToUse)) {
+                console.warn(`[Chat API] WORKAROUND: Disabling tools for ${providerIdToUse} due to SDK incompatibility with stdio tools.`);
                 toolsForStream = {}; // Disable tools
             }
 

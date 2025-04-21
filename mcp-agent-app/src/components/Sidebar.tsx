@@ -79,7 +79,10 @@ const Sidebar: React.FC = () => {
 
     // Save/Update handler - Uses existing title if updating
     const handleSaveClick = async () => {
-        if (messages.length <= 1 && currentChatId === null) {
+        // Check if there are any user or assistant messages to save
+        // Use 'assistant' role from AiMessage type
+        const hasMessagesToSave = messages.some(msg => msg.role === 'user' || msg.role === 'assistant');
+        if (!hasMessagesToSave && currentChatId === null) {
             alert("Nothing to save yet.");
             return;
         }
@@ -250,7 +253,9 @@ const Sidebar: React.FC = () => {
 
             {/* Footer with Save/Update Button */}
             <div className="p-4 border-t border-gray-200 dark:border-gray-700 flex-shrink-0 space-y-2">
-                {messages.length > 1 && (
+                {/* Show button if there are user or assistant messages */}
+                {/* Use 'assistant' role from AiMessage type */}
+                {messages.some(msg => msg.role === 'user' || msg.role === 'assistant') && (
                     <button
                         onClick={handleSaveClick}
                         className={`flex items-center justify-center w-full p-2 space-x-3 rounded-md text-sm ${currentChatId

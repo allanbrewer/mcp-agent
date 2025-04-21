@@ -5,8 +5,9 @@ import { Content } from '@google/genai'; // Import Content type for validation/c
 // Define the expected structure for the POST request body
 interface CreateChatRequestBody {
     title: string;
-    history: Content[]; // Expecting the full Gemini history format
+    history: any[]; // Use any[] as history format might vary (CoreMessage)
     systemPrompt?: string;
+    providerId?: string; // Add optional providerId
     modelId?: string; // Add optional modelId
     // userId?: string; // Add later if implementing user accounts
 }
@@ -54,6 +55,7 @@ export async function POST(request: NextRequest) {
                 title: body.title,
                 history: body.history as any, // Cast to 'any' for Prisma Json type
                 systemPrompt: body.systemPrompt,
+                providerId: body.providerId, // Add providerId
                 modelId: body.modelId, // Add modelId
             },
         });
