@@ -11,7 +11,8 @@ declare const window: CustomWindow;
 
 interface ChatInputProps {
     value: string;
-    onChange: (value: string) => void;
+    // Update onChange prop to accept the event directly
+    onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => void;
     onSend: (text: string) => void;
 }
 
@@ -44,9 +45,10 @@ const ChatInput: React.FC<ChatInputProps> = ({ value, onChange, onSend }) => {
         };
     }, []);
 
-    const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
-        onChange(event.target.value);
-    };
+    // Remove the internal handleInputChange wrapper
+    // const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    //     onChange(event.target.value);
+    // };
 
     const handleSendClick = () => {
         if (value.trim()) {
@@ -76,7 +78,11 @@ const ChatInput: React.FC<ChatInputProps> = ({ value, onChange, onSend }) => {
 
         // Combine the text that was present before recording, the newly finalized text, and the current interim text
         const newText = (currentFinalizedTranscriptRef.current + ' ' + currentSegmentFinalTranscript + interimTranscript).trim();
-        onChange(newText);
+        // Simulate a change event to update the input value via the hook's handler
+        const syntheticEvent = {
+            target: { value: newText }
+        } as React.ChangeEvent<HTMLTextAreaElement>; // Cast to the expected type
+        onChange(syntheticEvent);
 
         // If this segment contained final results, update the base finalized transcript for the next event
         if (currentSegmentFinalTranscript) {
@@ -169,7 +175,8 @@ const ChatInput: React.FC<ChatInputProps> = ({ value, onChange, onSend }) => {
                     placeholder="Type or use microphone..." // Updated placeholder
                     className="flex-grow p-2 bg-transparent text-gray-900 dark:text-gray-100 dark:placeholder-gray-400 focus:outline-none resize-none overflow-y-auto"
                     value={value}
-                    onChange={handleInputChange}
+                    // Pass the onChange prop directly
+                    onChange={onChange}
                     onKeyDown={handleKeyDown}
                 />
                 {/* Microphone Button */}

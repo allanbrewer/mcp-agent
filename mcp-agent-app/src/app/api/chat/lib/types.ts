@@ -1,13 +1,16 @@
-// Define the structure for a message in the chat history
-export interface Message {
-    sender: 'user' | 'llm';
-    text: string;
-}
+import { CoreMessage } from 'ai'; // Import CoreMessage
 
-// Define the structure for the incoming request body
+// Remove old Message interface (no longer needed)
+// export interface Message {
+//     sender: 'user' | 'llm';
+//     text: string;
+// }
+
+// Define the structure for the incoming request body using CoreMessage
 export interface RequestBody {
-    messages: Message[];
+    messages: CoreMessage[]; // Use CoreMessage array
     modelId?: string; // Add optional modelId
+    providerId?: string; // Add optional providerId
 }
 
 // --- MCP Server Configuration Interfaces ---

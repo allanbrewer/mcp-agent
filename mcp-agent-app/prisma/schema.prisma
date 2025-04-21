@@ -17,8 +17,9 @@ model Chat {
   title        String
   createdAt    DateTime @default(now())
   lastModified DateTime @updatedAt
-  history      Json // Store the Gemini Content[] array as JSON
+  history      Json // Store the chat history (likely CoreMessage[]) as JSON
   systemPrompt String?
+  providerId   String? // Store the ID of the LLM provider used
   modelId      String? // Store the ID of the LLM model used
 
   @@index([userId]) // Index userId if it becomes frequently queried
