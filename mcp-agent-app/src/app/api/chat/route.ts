@@ -4,11 +4,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
     streamText,
     generateText, // Added for lightweight LLM call
-    CoreMessage,
     experimental_createMCPClient as createMCPClient,
 } from 'ai';
-// Import the Stdio Transport - Still needed by McpClientManager internally
-// import { Experimental_StdioMCPTransport as StdioMCPTransport } from 'ai/mcp-stdio';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -141,12 +138,14 @@ export async function POST(request: NextRequest) {
                     neededServerIds = predictionResult
                         .split(',')
                         .map(id => id.trim())
-                        .filter(id => id) // Remove empty strings resulting from extra commas
+                        .filter(id => id)
                         .filter(id => availableServerIds.includes(id));
                 }
                 console.log(`[Tool Selection] Determined needed server IDs: ${neededServerIds.length > 0 ? neededServerIds.join(', ') : 'None'}`);
+                // Removed data.append for tool_selection_finished
 
             } catch (predictionError) {
+                // const errorMessage = predictionError instanceof Error ? predictionError.message : String(predictionError);
                 console.error('[Tool Selection] Error during prediction:', predictionError);
                 // Fallback strategy: Use all servers? Or none? For now, use none on error.
                 neededServerIds = [];
@@ -161,14 +160,14 @@ export async function POST(request: NextRequest) {
         // --- Step 2 & 3: Initialize Manager & Relevant Clients ---
         mcpManager = new McpClientManager(mcpConfig); // Instantiate the manager
         if (neededServerIds.length > 0) {
-            await mcpManager.initializeClients(neededServerIds); // Initialize only needed clients
+            await mcpManager.initializeClients(neededServerIds);
         } else {
             console.log("[Chat API] No relevant server IDs determined. Proceeding without MCP tools.");
         }
 
 
         // --- Step 4: Get Tools & Call streamText ---
-        const relevantTools = await mcpManager.getMergedToolsForInitialized(); // Get tools only from initialized clients
+        const relevantTools = await mcpManager.getMergedToolsForInitialized();
 
         // --- Generate System Prompt ---
         // Consider making this dynamic based on available tools?
@@ -200,18 +199,13 @@ export async function POST(request: NextRequest) {
             if (mcpManager) {
                 await mcpManager.closeInitializedClients();
             }
-            throw streamError; // Re-throw the error
+            throw streamError;
         }
 
 
         // --- Return Streaming Response ---
-        return new Response(result.toDataStream(), {
-            headers: {
-                'Content-Type': 'text/event-stream',
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-            },
-        });
+        // Use toDataStreamResponse() which formats the stream correctly for useChat
+        return result.toDataStreamResponse();
 
     } catch (error) {
         console.error('[Chat API Error]', error);

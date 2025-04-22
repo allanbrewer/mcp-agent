@@ -126,10 +126,11 @@ export class McpClientManager {
                 this.clients.set(serverConfig.id, mcpClient);
                 console.log(`[McpClientManager] Successfully initialized client for: ${serverConfig.id}`);
             } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
                 console.error(`[McpClientManager] Failed to initialize MCP client for server ${serverConfig.id}:`, error);
                 // Decide on error handling: throw, or just log and continue?
                 // For now, re-throwing to make failures explicit during request processing.
-                throw new Error(`Failed to initialize MCP server ${serverConfig.id}: ${error instanceof Error ? error.message : String(error)}`);
+                throw new Error(`Failed to initialize MCP server ${serverConfig.id}: ${errorMessage}`);
             }
         });
 
@@ -150,7 +151,8 @@ export class McpClientManager {
         const toolPromises = Array.from(this.clients.entries()).map(async ([serverId, client]) => {
             try {
                 const tools = await client.tools();
-                console.log(`[McpClientManager] Fetched ${Object.keys(tools).length} tools from ${serverId}`);
+                const toolCount = Object.keys(tools).length;
+                console.log(`[McpClientManager] Fetched ${toolCount} tools from ${serverId}`);
                 return { serverId, tools };
             } catch (error) {
                 console.error(`[McpClientManager] Failed to fetch tools from server ${serverId}:`, error);

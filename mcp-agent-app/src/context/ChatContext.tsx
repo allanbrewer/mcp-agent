@@ -6,12 +6,12 @@ import React, {
     useContext,
     useCallback,
     ReactNode,
-    useEffect, // Keep useEffect for body sync
+    useEffect,
     ChangeEvent,
     FormEvent
 } from 'react';
-import { useChat as useAiChat, type Message as AiMessage } from '@ai-sdk/react'; // Use new import path
-import { CoreMessage, CoreUserMessage, CoreAssistantMessage } from 'ai'; // Import specific CoreMessage types
+import { useChat as useAiChat, type Message as AiMessage } from '@ai-sdk/react';
+import { CoreMessage, CoreUserMessage, CoreAssistantMessage } from 'ai';
 import llmConfigData from '../../llm-config.json';
 
 // Keep MessageData for potential display mapping if needed, but primary state is AiMessage
@@ -64,11 +64,12 @@ interface ChatContextType {
     input: string;
     handleInputChange: (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
     handleSubmit: (e: FormEvent<HTMLFormElement>) => void;
-    isLoading: boolean;
+    status: 'error' | 'submitted' | 'streaming' | 'ready';
     error: Error | undefined;
     reload: () => void;
     stop: () => void;
-    setMessages: (messages: AiMessage[]) => void; // Expose setter
+    setMessages: (messages: AiMessage[]) => void;
+    // Removed data property
 }
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
@@ -91,6 +92,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // --- Instantiate useAiChat Hook ---
     const aiChatHook = useAiChat({
         api: '/api/chat',
+        // Removed experimental_streamData: true
         // Body is now dynamic via useEffect below
         body: {
             providerId: currentProviderId,
@@ -126,7 +128,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // --- Context Actions ---
     const startNewChat = useCallback(() => {
         setCurrentChatId(null);
-        aiChatHook.setMessages([]); // Clear hook's messages
+        aiChatHook.setMessages([]);
         setCurrentProviderId(initialProviderId); // Reset provider
         setCurrentModelId(initialModelId); // Reset model
     }, [aiChatHook, initialProviderId, initialModelId]);
@@ -259,15 +261,15 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             currentModelId,
             setCurrentModelId,
             // --- Values/Functions from useAiChat ---
-            messages: aiChatHook.messages, // Expose messages from hook
+            messages: aiChatHook.messages,
             input: aiChatHook.input,
             handleInputChange: aiChatHook.handleInputChange as (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void, // Re-add cast
             handleSubmit: aiChatHook.handleSubmit,
-            isLoading: aiChatHook.isLoading,
+            status: aiChatHook.status,
             error: aiChatHook.error,
             reload: aiChatHook.reload,
             stop: aiChatHook.stop,
-            setMessages: aiChatHook.setMessages, // Expose setter from hook
+            setMessages: aiChatHook.setMessages,
         }}>
             {children}
         </ChatContext.Provider>

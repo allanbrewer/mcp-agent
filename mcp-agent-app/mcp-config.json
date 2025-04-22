@@ -79,6 +79,24 @@
                     "{SCRIPT_DIR}": "DDG_MCP_SCRIPT_DIR"
                 }
             }
+        },
+        {
+            "id": "filesystem",
+            "description": "Node.js server implementing MCP for filesystem operations (read/write files, list/create/delete dirs, move, search). Operates only within specified directories.",
+            "command": {
+                "defaultExecutable": "npx",
+                "argsTemplate": [
+                    "-y",
+                    "@modelcontextprotocol/server-filesystem",
+                    "{FS_ALLOWED_DIR_1}",
+                    "{FS_ALLOWED_DIR_2}"
+                ],
+                "argSubstitutions": {
+                    "{FS_ALLOWED_DIR_1}": "FILESYSTEM_ALLOWED_DIR_1",
+                    "{FS_ALLOWED_DIR_2}": "FILESYSTEM_ALLOWED_DIR_2"
+                },
+                "envVars": []
+            }
         }
     ]
 }
