@@ -125,11 +125,8 @@ const ChatInterface: React.FC = () => {
             {/* Status Display Area - Use correct status values and add pulsing dots */}
             <div className="text-center text-xs text-gray-500 dark:text-gray-400 pt-1 h-5">
                 {status === 'streaming' || status === 'submitted' ? (
-                    <span className="inline-flex items-center">
-                        Thinking
-                        <span className="animate-pulse delay-0 duration-1000">.</span>
-                        <span className="animate-pulse delay-150 duration-1000">.</span>
-                        <span className="animate-pulse delay-300 duration-1000">.</span>
+                    <span className="inline-flex items-center animate-text-gradient">
+                        Thinking...
                     </span>
                 ) : error ? (
                     `Error: ${error.message}`
