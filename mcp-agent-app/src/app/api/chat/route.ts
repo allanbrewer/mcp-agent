@@ -184,7 +184,7 @@ export async function POST(request: NextRequest) {
                 system: dynamicSystemPrompt,
                 messages: messages,
                 tools: toolsForStream, // Use the relevant (and potentially filtered) tools
-                maxSteps: 5,
+                maxSteps: 15, // Increased max steps
                 onFinish: async (finishData) => {
                     console.log("Stream finished.", finishData);
                     // Close only the initialized clients via the manager

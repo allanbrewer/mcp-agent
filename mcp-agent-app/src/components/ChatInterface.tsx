@@ -15,6 +15,7 @@ const ChatInterface: React.FC = () => {
         handleSubmit,
         status,
         error,
+        stop, // <<< Get stop function from context
     } = useChatContext();
 
     const messagesEndRef = useRef<null | HTMLDivElement>(null);
@@ -116,25 +117,39 @@ const ChatInterface: React.FC = () => {
             {/* Input Area Container - Use a form for handleSubmit */}
             <form onSubmit={handleFormSubmit} className="relative mb-2">
                 <ChatInput
-                    value={input} // Use input from context
-                    onChange={handleInputChange} // Use handler from context
-                    onSend={handleSendWrapper} // Use wrapper to trigger submit
+                    value={input}
+                    onChange={handleInputChange}
+                    onSend={handleSendWrapper}
+                    status={status} // <<< Pass status down
+                    onStop={stop} // <<< Pass stop function down
                 />
             </form>
 
-            {/* Status Display Area - Use correct status values and add pulsing dots */}
+            {/* Status Display Area - Calculate step count and show thinking animation */}
             <div className="text-center text-xs text-gray-500 dark:text-gray-400 pt-1 h-5">
-                {status === 'streaming' || status === 'submitted' ? (
-                    <span className="inline-flex items-center animate-text-gradient">
-                        Thinking...
-                    </span>
-                ) : error ? (
+                {status === 'streaming' || status === 'submitted' ? (() => {
+                    // Calculate current step based on tool calls in the latest assistant message parts
+                    const lastMessage = messages[messages.length - 1];
+                    let stepCount = 0;
+                    if (lastMessage?.role === 'assistant' && lastMessage.parts) {
+                        // Count only the 'call' state for steps
+                        stepCount = lastMessage.parts.filter(p => p.type === 'tool-invocation' && p.toolInvocation?.state === 'call').length;
+                    }
+                    // Display step number (starting from 1 for the first tool call)
+                    const displayStep = stepCount > 0 ? ` (Step ${stepCount})` : '';
+
+                    return (
+                        <span className="inline-flex items-center animate-text-gradient">
+                            Thinking... {displayStep}
+                        </span>
+                    );
+                })() : error ? (
                     `Error: ${error.message}`
                 ) : (
                     ""
                 )}
             </div>
-            {/* Placeholder for height consistency - simplified */}
+            {/* Placeholder for height consistency */}
             {status === 'ready' && !error && <div className="h-5 pt-1"></div>}
         </div>
     ); // Ensure closing parenthesis is present
