@@ -12,7 +12,9 @@
                     "{SCRIPT_DIR}",
                     "main.py"
                 ],
-                "scriptDirEnvVar": "WHATSAPP_MCP_SCRIPT_DIR"
+                "argSubstitutions": {
+                    "{SCRIPT_DIR}": "WHATSAPP_MCP_SCRIPT_DIR"
+                }
             },
             "tools": [
                 {
@@ -310,9 +312,10 @@
                     "GITHUB_PERSONAL_ACCESS_TOKEN={GITHUB_PAT}",
                     "ghcr.io/github/github-mcp-server"
                 ],
-                "envVars": [
-                    "GITHUB_PERSONAL_ACCESS_TOKEN"
-                ]
+                "argSubstitutions": {
+                    "{GITHUB_PAT}": "GITHUB_PERSONAL_ACCESS_TOKEN"
+                },
+                "envVars": []
             },
             "tools": [
                 {
@@ -1124,10 +1127,12 @@
                     "--credentials-dir",
                     "{GSUITE_CREDENTIALS_DIR}"
                 ],
-                "scriptDirEnvVar": "GSUITE_MCP_SCRIPT_DIR",
-                "gauthFileEnvVar": "GSUITE_GAUTH_FILE",
-                "accountsFileEnvVar": "GSUITE_ACCOUNTS_FILE",
-                "credentialsDirEnvVar": "GSUITE_CREDENTIALS_DIR"
+                "argSubstitutions": {
+                    "{GSUITE_MCP_SCRIPT_DIR}": "GSUITE_MCP_SCRIPT_DIR",
+                    "{GSUITE_GAUTH_FILE}": "GSUITE_GAUTH_FILE",
+                    "{GSUITE_ACCOUNTS_FILE}": "GSUITE_ACCOUNTS_FILE",
+                    "{GSUITE_CREDENTIALS_DIR}": "GSUITE_CREDENTIALS_DIR"
+                }
             },
             "tools": [
                 {
@@ -1481,7 +1486,9 @@
                     "-m",
                     "duckduckgo_mcp_server.server"
                 ],
-                "scriptDirEnvVar": "DDG_MCP_SCRIPT_DIR"
+                "argSubstitutions": {
+                    "{SCRIPT_DIR}": "DDG_MCP_SCRIPT_DIR"
+                }
             },
             "tools": [
                 {

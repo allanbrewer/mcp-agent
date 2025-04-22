@@ -26,7 +26,7 @@ export class McpClientManager {
 
     /**
      * Prepares command, arguments, and environment variables for launching an MCP server via Stdio.
-     * Handles template substitution and environment variable filtering.
+     * Handles template substitution and environment variable filtering based on config.
      */
     private prepareStdioArgs(serverConfig: McpServerConfig): { command: string; args: string[]; env: Record<string, string> } {
         const { command: commandConfig } = serverConfig;
@@ -38,7 +38,7 @@ export class McpClientManager {
         let args: string[];
         const childEnv: Record<string, string> = {}; // Start with minimal env
 
-        // --- Resolve Executable ---
+        // --- Resolve Executable (Remains Generic) ---
         const executableEnvVar = commandConfig.executableEnvVar;
         const defaultExecutable = commandConfig.defaultExecutable;
         command = (executableEnvVar && process.env[executableEnvVar]) || defaultExecutable;
@@ -46,49 +46,35 @@ export class McpClientManager {
             throw new Error(`Could not determine executable for MCP server ${serverConfig.id}. Checked env var '${executableEnvVar}' and default '${defaultExecutable}'.`);
         }
 
-        // --- Resolve Script Directory (if needed) ---
-        const scriptDirEnvVar = commandConfig.scriptDirEnvVar;
-        let scriptDir = scriptDirEnvVar ? process.env[scriptDirEnvVar] : undefined;
-        if (scriptDir) {
-            scriptDir = path.resolve(scriptDir); // Ensure absolute path
-            console.log(`[McpClientManager][prepareStdioArgs][${serverConfig.id}] Script Dir Env Var ('${scriptDirEnvVar}'): Resolved Path = '${scriptDir}'`);
-        } else if (scriptDirEnvVar) {
-            console.log(`[McpClientManager][prepareStdioArgs][${serverConfig.id}] Script Dir Env Var ('${scriptDirEnvVar}'): Not Found/Set`);
-        }
-
-        // --- Substitute Args Template ---
+        // --- Substitute Args Template (Generic Loop) ---
         const argsTemplate = commandConfig.argsTemplate || [];
+        // Cast argSubstitutions to the expected type, handling potential undefined
+        const argSubstitutions = commandConfig.argSubstitutions as Record<string, string> | undefined;
+
         args = argsTemplate.map(originalArg => {
             let processedArg = originalArg;
 
-            // Generic {SCRIPT_DIR} substitution
-            if (processedArg.includes('{SCRIPT_DIR}')) {
-                if (!scriptDir) {
-                    const errorMsg = `Argument template for ${serverConfig.id} requires {SCRIPT_DIR}, but env var '${scriptDirEnvVar}' is not set.`;
-                    console.error(`[McpClientManager][prepareStdioArgs][${serverConfig.id}] ${errorMsg}`);
-                    throw new Error(errorMsg);
+            // Perform substitutions defined in the config
+            if (argSubstitutions && Object.keys(argSubstitutions).length > 0) {
+                for (const [placeholder, envVarName] of Object.entries(argSubstitutions)) {
+                    if (processedArg.includes(placeholder)) {
+                        const envValue = process.env[envVarName];
+                        if (envValue === undefined) {
+                            // Throw specific error if required env var for substitution is missing
+                            throw new Error(`Configuration error for server '${serverConfig.id}': Argument placeholder '${placeholder}' requires environment variable '${envVarName}', which is not set.`);
+                        }
+                        // Use replaceAll to handle multiple occurrences
+                        processedArg = processedArg.replaceAll(placeholder, envValue);
+                        console.log(`[McpClientManager][prepareStdioArgs] Substituted '${placeholder}' in arg for server ${serverConfig.id}`);
+                    }
                 }
-                processedArg = processedArg.replace('{SCRIPT_DIR}', scriptDir);
-                console.log(`[McpClientManager][prepareStdioArgs] Substituted generic {SCRIPT_DIR} in arg: ${originalArg} -> ${processedArg}`);
             }
+            // No need for the old warning log about unsubstituted templates
 
-            // --- Specific Server Substitutions (Example: GitHub PAT) ---
-            // Add more specific substitutions here as needed, similar to the original route.ts
-            if (serverConfig.id === 'github' && processedArg.includes('{GITHUB_PAT}')) {
-                const githubPat = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
-                if (!githubPat) throw new Error("Missing GITHUB_PERSONAL_ACCESS_TOKEN env var for GitHub server.");
-                processedArg = processedArg.replace('{GITHUB_PAT}', githubPat);
-            }
-            // Add GSuite substitutions if necessary...
-
-            // Log if no substitution occurred for a template-like string
-            if (processedArg === originalArg && originalArg.includes('{') && originalArg.includes('}')) {
-                console.warn(`[McpClientManager][prepareStdioArgs] Arg '${originalArg}' looked like a template but no substitution was applied for server ${serverConfig.id}.`);
-            }
             return processedArg;
         });
 
-        // --- Filter Environment Variables ---
+        // --- Filter Environment Variables (Remains Generic) ---
         if (commandConfig.envVars) {
             for (const envVarName of commandConfig.envVars) {
                 const value = process.env[envVarName];
