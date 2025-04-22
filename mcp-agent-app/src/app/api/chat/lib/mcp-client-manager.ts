@@ -163,11 +163,18 @@ export class McpClientManager {
         const mergedTools: ToolsObject = allToolSets.reduce((acc, { serverId, tools }) => {
             for (const toolName in tools) {
                 if (acc[toolName]) {
-                    console.warn(`[McpClientManager] Duplicate tool name '${toolName}' encountered (from server ${serverId}). Overwriting previous definition.`);
+                    // Duplicate detected! Prefix the new tool name.
+                    const prefixedToolName = `${serverId}.${toolName}`;
+                    console.warn(`[McpClientManager] Duplicate tool name '${toolName}' encountered (from server ${serverId}). Adding as '${prefixedToolName}'.`);
+                    // Check if the prefixed name *also* conflicts (unlikely but possible)
+                    if (acc[prefixedToolName]) {
+                        console.error(`[McpClientManager] CRITICAL: Prefixed tool name '${prefixedToolName}' also conflicts! Overwriting.`);
+                    }
+                    acc[prefixedToolName] = tools[toolName];
+                } else {
+                    // No conflict, add normally.
+                    acc[toolName] = tools[toolName];
                 }
-                // Optionally, prefix tool names with server ID: e.g., `${serverId}.${toolName}`
-                // acc[`${serverId}.${toolName}`] = tools[toolName];
-                acc[toolName] = tools[toolName];
             }
             return acc;
         }, {} as ToolsObject);

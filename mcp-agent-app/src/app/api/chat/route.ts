@@ -1,4 +1,5 @@
 import path from 'path';
+import fs from 'fs/promises'; // Use promises API for async operations
 import { NextRequest, NextResponse } from 'next/server';
 import {
     streamText,
@@ -13,12 +14,16 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createXai } from '@ai-sdk/xai';
 
-import llmConfigData from '../../../../llm-config.json';
-
 // Import types
-import { RequestBody, McpConfig, McpServerConfig, LlmConfig, LlmProvider, LlmModel, McpToolConfig } from './lib/types';
+import { RequestBody, LlmConfig } from './lib/types';
 import { loadMcpConfig } from './lib/mcp-config-loader';
 import { McpClientManager } from './lib/mcp-client-manager'; // Import the manager
+
+// Load LLM config data
+const LLM_CONFIG_PATH = path.resolve(process.cwd(), 'llm-config.json');
+console.log(`Attempting to load MCP config from: ${LLM_CONFIG_PATH}`);
+const fileContent = await fs.readFile(LLM_CONFIG_PATH, 'utf-8');
+const llmConfigData = JSON.parse(fileContent);
 
 // Load environment variables
 import dotenv from 'dotenv';
@@ -132,7 +137,12 @@ export async function POST(request: NextRequest) {
                 console.log(`[Tool Selection] Prediction result: "${predictionResult}"`);
 
                 if (predictionResult && predictionResult.toUpperCase() !== 'NONE') {
-                    neededServerIds = predictionResult.split(',').map(id => id.trim()).filter(id => availableServerIds.includes(id)); // Filter against available IDs
+                    // Improved parsing: split, trim, filter out empty strings, then filter against available IDs
+                    neededServerIds = predictionResult
+                        .split(',')
+                        .map(id => id.trim())
+                        .filter(id => id) // Remove empty strings resulting from extra commas
+                        .filter(id => availableServerIds.includes(id));
                 }
                 console.log(`[Tool Selection] Determined needed server IDs: ${neededServerIds.length > 0 ? neededServerIds.join(', ') : 'None'}`);
 
