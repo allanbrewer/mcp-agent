@@ -15,6 +15,7 @@ import { createXai } from '@ai-sdk/xai';
 import { RequestBody, LlmConfig } from './lib/types';
 import { loadMcpConfig } from './lib/mcp-config-loader';
 import { McpClientManager } from './lib/mcp-client-manager'; // Import the manager
+import { getPopulatedSystemPrompt } from './lib/system-prompt'; // Import the new prompt function
 
 // Load LLM config data
 const LLM_CONFIG_PATH = path.resolve(process.cwd(), 'llm-config.json');
@@ -38,7 +39,7 @@ const XAI_API_KEY = process.env.XAI_API_KEY;
 
 // --- Log API Key Status (Masked) ---
 console.log(`[API Keys] Lite Google: ${LITE_GOOGLE_API_KEY ? 'Loaded' : 'MISSING'}, Google: ${GOOGLE_API_KEY ? 'Loaded' : 'MISSING'}, OpenAI: ${OPENAI_API_KEY ? 'Loaded' : 'MISSING'}, Anthropic: ${ANTHROPIC_API_KEY ? 'Loaded' : 'MISSING'}, XAI: ${XAI_API_KEY ? 'Loaded' : 'MISSING'}`);
-// ---
+
 
 
 // --- Lightweight LLM for Tool Selection ---
@@ -169,10 +170,9 @@ export async function POST(request: NextRequest) {
         // --- Step 4: Get Tools & Call streamText ---
         const relevantTools = await mcpManager.getMergedToolsForInitialized();
 
-        // --- Generate System Prompt ---
-        // Consider making this dynamic based on available tools?
-        const dynamicSystemPrompt = `You are a helpful and informative assistant. You have access to external tools to help fulfill requests. Available tools: ${Object.keys(relevantTools).join(', ') || 'None'}.`;
-
+        // --- Get Populated System Prompt ---
+        // TODO: Pass actual location from request body if available
+        const populatedSystemPrompt = getPopulatedSystemPrompt();
 
         // --- Call Vercel AI SDK streamText ---
         let result;
@@ -181,10 +181,13 @@ export async function POST(request: NextRequest) {
 
             result = await streamText({
                 model: primaryLanguageModel,
-                system: dynamicSystemPrompt,
+                system: populatedSystemPrompt, // Use the populated prompt
                 messages: messages,
-                tools: toolsForStream, // Use the relevant (and potentially filtered) tools
-                maxSteps: 15, // Increased max steps
+                tools: toolsForStream,
+                maxSteps: 15,
+                temperature: 1,
+                topK: 20,
+                maxTokens: 4096,
                 onFinish: async (finishData) => {
                     console.log("Stream finished.", finishData);
                     // Close only the initialized clients via the manager
