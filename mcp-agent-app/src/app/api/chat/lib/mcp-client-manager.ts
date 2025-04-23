@@ -87,12 +87,26 @@ export class McpClientManager {
                 console.log(`[McpClientManager][prepareStdioArgs][${serverConfig.id}] Added required env var: ${envVarName}`);
             }
         }
-        // Ensure PATH is passed through if present
-        if (process.env.PATH) {
+
+        // --- Merge direct env config from mcp-config.json ---
+        const directEnvConfig = commandConfig.env as Record<string, string> | undefined;
+        if (directEnvConfig) {
+            for (const [key, value] of Object.entries(directEnvConfig)) {
+                // Values from direct config override host env vars if names conflict
+                if (childEnv[key]) {
+                    console.warn(`[McpClientManager][prepareStdioArgs][${serverConfig.id}] Direct env config for '${key}' overrides value passed from host environment.`);
+                }
+                childEnv[key] = value;
+                console.log(`[McpClientManager][prepareStdioArgs][${serverConfig.id}] Added direct env var from config: ${key}`);
+            }
+        }
+
+        // Ensure PATH is passed through if present and not overridden by direct config
+        if (process.env.PATH && !childEnv['PATH']) {
             childEnv['PATH'] = process.env.PATH;
         }
 
-        console.log(`[McpClientManager][prepareStdioArgs][${serverConfig.id}] Prepared: command='${command}', args='${args.join(' ')}'`);
+        console.log(`[McpClientManager][prepareStdioArgs][${serverConfig.id}] Prepared: command='${command}', args='${args.join(' ')}', env keys='${Object.keys(childEnv).join(', ')}'`);
         return { command, args, env: childEnv };
     }
 

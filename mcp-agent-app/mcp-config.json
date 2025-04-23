@@ -123,6 +123,33 @@
                 "argSubstitutions": {},
                 "envVars": []
             }
+        },
+        {
+            "id": "memory",
+            "description": "Node.js server A basic implementation of persistent memory using a local knowledge graph. This lets the LLM models remember information about the user across chats.",
+            "command": {
+                "defaultExecutable": "npx",
+                "argsTemplate": [
+                    "-y",
+                    "@modelcontextprotocol/server-memory"
+                ],
+                "argSubstitutions": {},
+                "env": {
+                    "MEMORY_FILE_PATH": "/Users/abrewer/projects/mcp-agent/mcp-agent-app/memory.json"
+                }
+            }
+        },
+        {
+            "id": "web-search",
+            "description": "Node.js server for performing google web searches and retrieving page content.",
+            "command": {
+                "defaultExecutable": "node",
+                "argsTemplate": [
+                    "/Users/abrewer/projects/mcp-agent/web-search/build/index.js"
+                ],
+                "argSubstitutions": {},
+                "envVars": []
+            }
         }
     ]
 }
