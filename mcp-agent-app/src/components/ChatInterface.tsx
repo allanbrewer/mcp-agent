@@ -128,19 +128,27 @@ const ChatInterface: React.FC = () => {
             {/* Status Display Area - Calculate step count and show thinking animation */}
             <div className="text-center text-xs text-gray-500 dark:text-gray-400 pt-1 h-5">
                 {status === 'streaming' || status === 'submitted' ? (() => {
-                    // Calculate current step based on tool calls in the latest assistant message parts
-                    const lastMessage = messages[messages.length - 1];
+                    // Find the index of the last user message
+                    const lastUserMessageIndex = messages.findLastIndex(m => m.role === 'user');
                     let stepCount = 0;
-                    if (lastMessage?.role === 'assistant' && lastMessage.parts) {
-                        // Count only the 'call' state for steps
-                        stepCount = lastMessage.parts.filter(p => p.type === 'tool-invocation' && p.toolInvocation?.state === 'call').length;
+
+                    // Iterate through messages *after* the last user message
+                    if (lastUserMessageIndex !== -1) {
+                        for (let i = lastUserMessageIndex + 1; i < messages.length; i++) {
+                            const msg = messages[i];
+                            if (msg.role === 'assistant' && msg.parts) {
+                                // Count any tool invocation part as a step
+                                stepCount += msg.parts.filter(p => p.type === 'tool-invocation').length;
+                            }
+                        }
                     }
-                    // Display step number (starting from 1 for the first tool call)
+
+                    // Display step number (Step 1 = first tool call)
                     const displayStep = stepCount > 0 ? ` (Step ${stepCount})` : '';
 
                     return (
                         <span className="inline-flex items-center animate-text-gradient">
-                            Thinking... {displayStep}
+                            Thinking{displayStep}...
                         </span>
                     );
                 })() : error ? (

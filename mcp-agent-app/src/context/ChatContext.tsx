@@ -69,7 +69,6 @@ interface ChatContextType {
     reload: () => void;
     stop: () => void;
     setMessages: (messages: AiMessage[]) => void;
-    // Removed data property
 }
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
@@ -92,8 +91,6 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // --- Instantiate useAiChat Hook ---
     const aiChatHook = useAiChat({
         api: '/api/chat',
-        // Removed experimental_streamData: true
-        // Body is now dynamic via useEffect below
         body: {
             providerId: currentProviderId,
             modelId: currentModelId,
@@ -101,22 +98,14 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         initialMessages: [], // Start empty, loadChat will populate
         onError: (err) => {
             console.error("[useAiChat Hook Error]", err);
-            // TODO: Expose error state via context if needed
         },
         onFinish: (message) => {
             console.log("[useAiChat Hook] Stream finished.");
-            // TODO: Trigger auto-save?
         }
     });
 
     // --- Sync useAiChat body with context state ---
-    // Use useEffect to update the body when provider/model changes
-    // This relies on the hook internally re-reading the body prop on submit,
-    // as setBody is not officially documented/stable.
     useEffect(() => {
-        // This effect now primarily serves to ensure the hook *could* react
-        // if it were designed to watch the body prop dynamically.
-        // The actual passing happens on initialization and submit.
         console.log(`[CONTEXT] Provider/Model changed. Next submit will use: ${currentProviderId}/${currentModelId}`);
     }, [currentProviderId, currentModelId]);
 
@@ -149,7 +138,6 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             setCurrentModelId(loadedModelId);
 
             // Map loaded CoreMessage[] history to AiMessage[]
-            // Filter strictly for user/assistant roles for compatibility
             const loadedAiMessages: AiMessage[] = (chatData.history || [])
                 .filter(coreMsg => coreMsg.role === 'user' || coreMsg.role === 'assistant')
                 .map((coreMsg, index) => ({
@@ -180,19 +168,19 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
     }, []);
 
-    // saveCurrentChat: Maps AiMessage[] from hook to CoreMessage[] for saving
+    // saveCurrentChat: Reverted to require title, removed auto-save logic
     const saveCurrentChat = useCallback(async (title: string): Promise<ChatRecord | null> => {
-        const historyToSave: CoreMessage[] = aiChatHook.messages
-            // Filter for roles compatible with CoreMessage (user/assistant for simplicity now)
+        // Use current hook messages directly
+        const messagesForHistory: AiMessage[] = [...aiChatHook.messages];
+
+        // Now map AiMessage[] to CoreMessage[]
+        const historyToSave: CoreMessage[] = messagesForHistory
             .filter(aiMsg => aiMsg.role === 'user' || aiMsg.role === 'assistant')
             .map(aiMsg => {
-                // Explicitly create CoreUserMessage or CoreAssistantMessage
                 const contentStr = typeof aiMsg.content === 'string' ? aiMsg.content : JSON.stringify(aiMsg.content);
                 if (aiMsg.role === 'user') {
-                    // Type assertion for CoreUserMessage
                     return { role: 'user', content: contentStr } as CoreUserMessage;
-                } else { // Must be 'assistant' due to filter
-                    // Type assertion for CoreAssistantMessage
+                } else {
                     return { role: 'assistant', content: contentStr } as CoreAssistantMessage;
                 }
             });
@@ -204,27 +192,32 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
         if (filteredHistory.length === 0) {
             console.error("[CONTEXT] Cannot save chat with no valid user or LLM messages.");
-            throw new Error("Cannot save chat with no user or LLM messages.");
+            return null;
         }
 
         const url = currentChatId ? `/api/chats/${currentChatId}` : '/api/chats';
         const method = currentChatId ? 'PUT' : 'POST';
 
-        // Log the IDs being sent to the backend for saving/updating
-        console.log(`[CONTEXT saveCurrentChat] Saving/Updating Chat ID: ${currentChatId || '(new)'}`);
-        console.log(`[CONTEXT saveCurrentChat] Provider ID being saved: ${currentProviderId}`);
-        console.log(`[CONTEXT saveCurrentChat] Model ID being saved: ${currentModelId}`);
+        // --- Prepare Request Body ---
+        // Title is now always required by the function signature for POST/PUT
+        const requestBody: any = {
+            title: title, // Use the provided title
+            history: filteredHistory,
+            providerId: currentProviderId,
+            modelId: currentModelId,
+        };
+
+        // --- Logging before Fetch ---
+        console.log(`[CONTEXT saveCurrentChat] Attempting ${method} to ${url}`);
+        console.log(`[CONTEXT saveCurrentChat] Title being sent:`, title);
+        console.log(`[CONTEXT saveCurrentChat] Request Body being sent:`, JSON.stringify(requestBody, null, 2));
+        // --- End Logging ---
 
         try {
             const response = await fetch(url, {
                 method: method,
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    title: title,
-                    history: filteredHistory,
-                    providerId: currentProviderId,
-                    modelId: currentModelId,
-                }),
+                body: JSON.stringify(requestBody),
             });
 
             if (!response.ok) {
@@ -235,6 +228,9 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             triggerListRefresh();
             if (!currentChatId) { // If it was a new chat, set its ID
                 setCurrentChatId(savedOrUpdatedChat.id);
+                console.log(`[CONTEXT saveCurrentChat] New chat saved with ID: ${savedOrUpdatedChat.id}`);
+            } else {
+                console.log(`[CONTEXT saveCurrentChat] Chat updated: ${currentChatId}`);
             }
             return savedOrUpdatedChat;
         } catch (error: any) {
