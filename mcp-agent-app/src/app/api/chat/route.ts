@@ -1,22 +1,26 @@
 import path from 'path';
+import fs from 'fs/promises'; // Use promises API for async operations
 import { NextRequest, NextResponse } from 'next/server';
 import {
     streamText,
-    CoreMessage,
+    generateText, // Added for lightweight LLM call
     experimental_createMCPClient as createMCPClient,
 } from 'ai';
-// Import the Stdio Transport
-import { Experimental_StdioMCPTransport as StdioMCPTransport } from 'ai/mcp-stdio';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createXai } from '@ai-sdk/xai';
 
-import llmConfigData from '../../../../llm-config.json';
-
 // Import types
-import { RequestBody, McpConfig, McpServerConfig, LlmConfig, LlmProvider, LlmModel, McpToolConfig } from './lib/types'; // Removed Message import
-import { loadMcpConfig } from './lib/mcp-config-loader'; // Keep config loader
+import { RequestBody, LlmConfig } from './lib/types';
+import { loadMcpConfig } from './lib/mcp-config-loader';
+import { McpClientManager } from './lib/mcp-client-manager'; // Import the manager
+
+// Load LLM config data
+const LLM_CONFIG_PATH = path.resolve(process.cwd(), 'llm-config.json');
+console.log(`Attempting to load MCP config from: ${LLM_CONFIG_PATH}`);
+const fileContent = await fs.readFile(LLM_CONFIG_PATH, 'utf-8');
+const llmConfigData = JSON.parse(fileContent);
 
 // Load environment variables
 import dotenv from 'dotenv';
@@ -26,139 +30,40 @@ dotenv.config({ path: '.env.local' });
 const llmConfig: LlmConfig = llmConfigData as LlmConfig;
 
 // --- API Key Loading ---
+const LITE_GOOGLE_API_KEY = process.env.LITE_GOOGLE_API_KEY;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const XAI_API_KEY = process.env.XAI_API_KEY;
 
 // --- Log API Key Status (Masked) ---
-console.log(`[API Keys] Google: ${GOOGLE_API_KEY ? 'Loaded' : 'MISSING'}, OpenAI: ${OPENAI_API_KEY ? 'Loaded' : 'MISSING'}, Anthropic: ${ANTHROPIC_API_KEY ? 'Loaded' : 'MISSING'}, XAI: ${XAI_API_KEY ? 'Loaded' : 'MISSING'}`);
+console.log(`[API Keys] Lite Google: ${LITE_GOOGLE_API_KEY ? 'Loaded' : 'MISSING'}, Google: ${GOOGLE_API_KEY ? 'Loaded' : 'MISSING'}, OpenAI: ${OPENAI_API_KEY ? 'Loaded' : 'MISSING'}, Anthropic: ${ANTHROPIC_API_KEY ? 'Loaded' : 'MISSING'}, XAI: ${XAI_API_KEY ? 'Loaded' : 'MISSING'}`);
 // ---
 
 
-// --- Helper to prepare MCP Client Stdio Args ---
-// Helper as StdioMCPTransport doesn't handle templating/env resolution automatically. TODO: Refactor to use a more generic MCP transport if available in the future.
-function prepareStdioArgs(serverConfig: McpServerConfig): { command: string; args: string[]; env: Record<string, string> } {
-    const { command: commandConfig } = serverConfig;
-    let command: string;
-    let args: string[];
-    // Start with an empty environment, only add required vars
-    const childEnv: Record<string, string> = {};
-
-    // --- Determine Command and Arguments ---
-    const executableEnvVar = commandConfig.executableEnvVar;
-    const defaultExecutable = commandConfig.defaultExecutable;
-    const scriptDirEnvVar = commandConfig.scriptDirEnvVar; // Generic script dir var name from config
-    const argsTemplate = commandConfig.argsTemplate || [];
-
-    // Resolve executable path
-    command = (executableEnvVar && process.env[executableEnvVar]) || defaultExecutable;
-    if (!command) {
-        throw new Error(`Could not determine executable for MCP server ${serverConfig.id}. Checked env var '${executableEnvVar}' and default '${defaultExecutable}'.`);
+// --- Lightweight LLM for Tool Selection ---
+// Assuming Google provider and a flash model ID exists in llm-config.json or is added.
+// Using 'gemini-1.5-flash-latest' as a placeholder. Adjust if needed.
+const TOOL_SELECTOR_PROVIDER_ID = 'google';
+const TOOL_SELECTOR_MODEL_ID = 'gemini-1.5-flash-latest'; // Placeholder
+let toolSelectorModel: ReturnType<ReturnType<typeof createGoogleGenerativeAI>>;
+if (LITE_GOOGLE_API_KEY) {
+    try {
+        const googleProvider = createGoogleGenerativeAI({ apiKey: LITE_GOOGLE_API_KEY });
+        toolSelectorModel = googleProvider(TOOL_SELECTOR_MODEL_ID);
+        console.log(`[Tool Selector] Initialized ${TOOL_SELECTOR_PROVIDER_ID}/${TOOL_SELECTOR_MODEL_ID}`);
+    } catch (e) {
+        console.error(`[Tool Selector] Failed to initialize ${TOOL_SELECTOR_PROVIDER_ID}/${TOOL_SELECTOR_MODEL_ID}:`, e);
+        // Handle error - perhaps fall back to using all tools?
     }
-
-    // Resolve generic script directory if needed and make absolute
-    let scriptDir = scriptDirEnvVar ? process.env[scriptDirEnvVar] : undefined;
-    if (scriptDir) {
-        scriptDir = path.resolve(scriptDir); // Resolve to absolute path
-        console.log(`[prepareStdioArgs][${serverConfig.id}] Generic Script Dir Env Var ('${scriptDirEnvVar}'): Resolved Path = '${scriptDir}'`);
-    } else {
-        console.log(`[prepareStdioArgs][${serverConfig.id}] Generic Script Dir Env Var ('${scriptDirEnvVar}'): Not Found/Set`);
-    }
-    if (argsTemplate.includes('{SCRIPT_DIR}') && !scriptDir) {
-        const errorMsg = `Argument template for ${serverConfig.id} requires {SCRIPT_DIR}, but env var '${scriptDirEnvVar}' is not set.`;
-        console.error(`[prepareStdioArgs][${serverConfig.id}] ${errorMsg}`);
-        throw new Error(errorMsg);
-    }
-
-    // Substitute template variables
-    args = argsTemplate.map(originalArg => {
-        let processedArg = originalArg; // Start with the original argument
-
-        // --- GitHub PAT Substitution ---
-        if (serverConfig.id === 'github' && processedArg.includes('{GITHUB_PAT}')) {
-            const githubPat = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
-            if (!githubPat) throw new Error("Missing GITHUB_PERSONAL_ACCESS_TOKEN env var for GitHub server.");
-            processedArg = processedArg.replace('{GITHUB_PAT}', githubPat);
-        }
-
-        // --- GSuite Substitutions ---
-        if (serverConfig.id === 'gsuite') {
-            const gsuiteScriptDirEnvVar = (commandConfig as any).scriptDirEnvVar ?? 'GSUITE_MCP_SCRIPT_DIR';
-            const gsuiteScriptDir = process.env[gsuiteScriptDirEnvVar];
-            const gauthFileEnvVar = (commandConfig as any).gauthFileEnvVar ?? 'GSUITE_GAUTH_FILE';
-            const gauthFile = process.env[gauthFileEnvVar];
-            const accountsFileEnvVar = (commandConfig as any).accountsFileEnvVar ?? 'GSUITE_ACCOUNTS_FILE';
-            const accountsFile = process.env[accountsFileEnvVar];
-            const credentialsDirEnvVar = (commandConfig as any).credentialsDirEnvVar ?? 'GSUITE_CREDENTIALS_DIR';
-            const credentialsDir = process.env[credentialsDirEnvVar];
-
-            let gsuiteSubstituted = false;
-            if (processedArg.includes('{GSUITE_MCP_SCRIPT_DIR}')) {
-                if (!gsuiteScriptDir) throw new Error(`GSuite arg template needs {GSUITE_MCP_SCRIPT_DIR}, but env var '${gsuiteScriptDirEnvVar}' is not set.`);
-                processedArg = processedArg.replace('{GSUITE_MCP_SCRIPT_DIR}', gsuiteScriptDir);
-                gsuiteSubstituted = true;
-            }
-            if (processedArg.includes('{GSUITE_GAUTH_FILE}')) {
-                if (!gauthFile) throw new Error(`GSuite arg template needs {GSUITE_GAUTH_FILE}, but env var '${gauthFileEnvVar}' is not set.`);
-                processedArg = processedArg.replace('{GSUITE_GAUTH_FILE}', gauthFile);
-                gsuiteSubstituted = true;
-            }
-            if (processedArg.includes('{GSUITE_ACCOUNTS_FILE}')) {
-                if (!accountsFile) throw new Error(`GSuite arg template needs {GSUITE_ACCOUNTS_FILE}, but env var '${accountsFileEnvVar}' is not set.`);
-                processedArg = processedArg.replace('{GSUITE_ACCOUNTS_FILE}', accountsFile);
-                gsuiteSubstituted = true;
-            }
-            if (processedArg.includes('{GSUITE_CREDENTIALS_DIR}')) {
-                if (!credentialsDir) throw new Error(`GSuite arg template needs {GSUITE_CREDENTIALS_DIR}, but env var '${credentialsDirEnvVar}' is not set.`);
-                processedArg = processedArg.replace('{GSUITE_CREDENTIALS_DIR}', credentialsDir);
-                gsuiteSubstituted = true;
-            }
-            if (gsuiteSubstituted) {
-                console.log(`[prepareStdioArgs] Substituted GSuite vars in arg: ${originalArg} -> ${processedArg}`);
-            }
-        }
-
-        // --- Generic {SCRIPT_DIR} Substitution (for non-GSuite/GitHub) ---
-        // Check if it hasn't already been substituted by GSuite logic
-        if (processedArg === '{SCRIPT_DIR}' && scriptDir) {
-            processedArg = scriptDir;
-            console.log(`[prepareStdioArgs] Substituted generic {SCRIPT_DIR} in arg: ${originalArg} -> ${processedArg}`);
-        }
-
-        // Log if no substitution occurred for a template-like string
-        if (processedArg === originalArg && originalArg.includes('{') && originalArg.includes('}')) {
-            console.warn(`[prepareStdioArgs] Arg '${originalArg}' looked like a template but no substitution was applied for server ${serverConfig.id}.`);
-        }
-
-        return processedArg; // Return the potentially modified argument
-    });
-
-    // Pass Thru ONLY Required Environment Variables specified in config
-    if (commandConfig.envVars) {
-        for (const envVarName of commandConfig.envVars) {
-            const value = process.env[envVarName];
-            if (value === undefined) {
-                // Throw error if required env var is missing
-                const errorMsg = `Required environment variable '${envVarName}' for MCP server ${serverConfig.id} is not set.`;
-                console.error(`[prepareStdioArgs][${serverConfig.id}] ${errorMsg}`);
-                throw new Error(errorMsg);
-            }
-            childEnv[envVarName] = value;
-            console.log(`[prepareStdioArgs][${serverConfig.id}] Added required env var: ${envVarName}`);
-        }
-    }
-    // Also ensure PATH is usually passed through, might be needed for `uv` or `docker`
-    if (process.env.PATH) {
-        childEnv['PATH'] = process.env.PATH;
-    }
-
-    // Return the minimal environment needed
-    return { command, args, env: childEnv };
+} else {
+    console.warn(`[Tool Selector] LITE_GOOGLE_API_KEY not set. Tool selection LLM disabled.`);
 }
 
 
 export async function POST(request: NextRequest) {
+    let mcpManager: McpClientManager | null = null; // Initialize manager variable
+
     try {
         const body: RequestBody = await request.json();
         const { messages, providerId: requestedProviderId, modelId: requestedModelId } = body;
@@ -166,147 +71,150 @@ export async function POST(request: NextRequest) {
         if (!messages || messages.length === 0) {
             return NextResponse.json({ error: 'No messages provided' }, { status: 400 });
         }
+        const latestUserMessage = messages[messages.length - 1]?.content;
+        if (typeof latestUserMessage !== 'string') {
+            return NextResponse.json({ error: 'Last message content is invalid or missing' }, { status: 400 });
+        }
 
-        // --- Determine Provider and Model ---
-        const providerIdToUse = requestedProviderId || 'xai';
+
+        // --- Determine Primary Provider and Model ---
+        const providerIdToUse = requestedProviderId || 'xai'; // Default primary provider
         const providerConfig = llmConfig.providers.find(p => p.id === providerIdToUse);
         if (!providerConfig) {
-            throw new Error(`Configuration for provider '${providerIdToUse}' not found.`);
+            throw new Error(`Configuration for primary provider '${providerIdToUse}' not found.`);
         }
         const defaultModelId = providerConfig.defaultModelId;
         const modelIdToUse = requestedModelId && providerConfig.models.some(m => m.id === requestedModelId)
             ? requestedModelId
             : defaultModelId;
         if (!modelIdToUse) {
-            throw new Error(`Could not determine model ID for provider '${providerIdToUse}'.`);
+            throw new Error(`Could not determine primary model ID for provider '${providerIdToUse}'.`);
         }
-        console.log(`Using Provider: ${providerIdToUse}, Model: ${modelIdToUse}`);
+        console.log(`Using Primary Provider: ${providerIdToUse}, Model: ${modelIdToUse}`);
 
-        // --- Instantiate LLM Provider ---
-        let languageModel;
+        // --- Instantiate Primary LLM Provider ---
+        let primaryLanguageModel;
         switch (providerIdToUse) {
             case 'google':
-                if (!GOOGLE_API_KEY) throw new Error("GOOGLE_API_KEY not set");
-                languageModel = createGoogleGenerativeAI({ apiKey: GOOGLE_API_KEY })(modelIdToUse);
+                if (!GOOGLE_API_KEY) throw new Error("GOOGLE_API_KEY not set for primary model");
+                primaryLanguageModel = createGoogleGenerativeAI({ apiKey: GOOGLE_API_KEY })(modelIdToUse);
                 break;
             case 'openai':
-                if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY not set");
-                languageModel = createOpenAI({ apiKey: OPENAI_API_KEY })(modelIdToUse);
+                if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY not set for primary model");
+                primaryLanguageModel = createOpenAI({ apiKey: OPENAI_API_KEY })(modelIdToUse);
                 break;
             case 'anthropic':
-                if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set");
-                languageModel = createAnthropic({ apiKey: ANTHROPIC_API_KEY })(modelIdToUse);
+                if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set for primary model");
+                primaryLanguageModel = createAnthropic({ apiKey: ANTHROPIC_API_KEY })(modelIdToUse);
                 break;
             case 'xai':
-                if (!XAI_API_KEY) throw new Error("XAI_API_KEY not set");
-                languageModel = createXai({ apiKey: XAI_API_KEY })(modelIdToUse);
+                if (!XAI_API_KEY) throw new Error("XAI_API_KEY not set for primary model");
+                primaryLanguageModel = createXai({ apiKey: XAI_API_KEY })(modelIdToUse);
                 break;
             default:
-                throw new Error(`Unsupported provider ID: ${providerIdToUse}`);
+                throw new Error(`Unsupported primary provider ID: ${providerIdToUse}`);
         }
 
-        // --- Load MCP Config & Prepare Clients ---
+        // --- Load MCP Config ---
         const mcpConfig = await loadMcpConfig();
-        // Infer the client type using ReturnType on the awaited promise result
-        const mcpClients: Awaited<ReturnType<typeof createMCPClient>>[] = [];
-        const mcpToolsPromises = mcpConfig.servers.map(async (serverConfig) => {
-            console.log(`[MCP Init] Processing server: ${serverConfig.id}`);
+        const availableServerIds = mcpConfig.servers.map(s => s.id);
+        let neededServerIds: string[] = [];
+
+        // --- Step 1: Predict Relevant Servers (if tool selector is available) ---
+        if (toolSelectorModel && availableServerIds.length > 0) {
+            console.log('[Tool Selection] Predicting relevant servers...');
             try {
-                // Step 1: Use prepareStdioArgs to get resolved command, args, and env
-                const { command, args, env } = prepareStdioArgs(serverConfig);
+                const predictionPrompt = `Based on the user query "${latestUserMessage}", which of these MCP servers seem relevant? Respond ONLY with a comma-separated list of their IDs (e.g., "github, whatsapp, gmail, web search, etc"). If none seem relevant, respond with "NONE". Available servers: ${availableServerIds.join(', ')}.`;
 
-                const mcpClient = await createMCPClient({
-                    transport: new StdioMCPTransport({
-                        command: command, // Use resolved command
-                        args: args,     // Use resolved args
-                        env: env,       // Use filtered env
-                    }),
-                    // initializeParams: { ... } // Add if needed later
+                const { text: predictionResult } = await generateText({
+                    model: toolSelectorModel,
+                    prompt: predictionPrompt,
+                    // Add temperature or other settings if needed
                 });
-                mcpClients.push(mcpClient); // Store the client instance
+                console.log(`[Tool Selection] Prediction result: "${predictionResult}"`);
 
-                const tools = await mcpClient.tools(); // Fetch tools
-
-                return tools;
-            } catch (error) {
-                console.error(`Failed to create MCP client or fetch tools for server ${serverConfig.id}:`, error);
-                // Step 2: Re-throw the error to make initialization failures explicit
-                throw new Error(`Failed to initialize MCP server ${serverConfig.id}: ${error instanceof Error ? error.message : String(error)}`);
-            }
-        });
-
-        // --- Merge Tools from All Clients ---
-        const allToolSets = await Promise.all(mcpToolsPromises);
-        const mergedTools = allToolSets.reduce((acc, toolSet) => {
-            // Basic merge, warn on overwrite
-            for (const toolName in toolSet) {
-                if (acc[toolName]) {
-                    console.warn(`Duplicate tool name '${toolName}' encountered during MCP client merge. Overwriting previous definition.`);
+                if (predictionResult && predictionResult.toUpperCase() !== 'NONE') {
+                    // Improved parsing: split, trim, filter out empty strings, then filter against available IDs
+                    neededServerIds = predictionResult
+                        .split(',')
+                        .map(id => id.trim())
+                        .filter(id => id)
+                        .filter(id => availableServerIds.includes(id));
                 }
-                acc[toolName] = toolSet[toolName];
+                console.log(`[Tool Selection] Determined needed server IDs: ${neededServerIds.length > 0 ? neededServerIds.join(', ') : 'None'}`);
+                // Removed data.append for tool_selection_finished
+
+            } catch (predictionError) {
+                // const errorMessage = predictionError instanceof Error ? predictionError.message : String(predictionError);
+                console.error('[Tool Selection] Error during prediction:', predictionError);
+                // Fallback strategy: Use all servers? Or none? For now, use none on error.
+                neededServerIds = [];
+                console.warn('[Tool Selection] Falling back to using NO tools due to prediction error.');
             }
-            return acc;
-        }, {});
+        } else if (availableServerIds.length > 0) {
+            console.warn('[Tool Selection] Tool selector LLM not available or no servers configured. Skipping tool selection step. NO tools will be used.');
+            neededServerIds = []; // Use no tools if selector isn't available
+        }
+
+
+        // --- Step 2 & 3: Initialize Manager & Relevant Clients ---
+        mcpManager = new McpClientManager(mcpConfig); // Instantiate the manager
+        if (neededServerIds.length > 0) {
+            await mcpManager.initializeClients(neededServerIds);
+        } else {
+            console.log("[Chat API] No relevant server IDs determined. Proceeding without MCP tools.");
+        }
+
+
+        // --- Step 4: Get Tools & Call streamText ---
+        const relevantTools = await mcpManager.getMergedToolsForInitialized();
 
         // --- Generate System Prompt ---
-        // Using simplified prompt for now
-        const dynamicSystemPrompt = "You are a helpful and informative assistant. You can answer questions, generate creative text formats, and provide information on a wide range of topics. You have access to external tools which include the ones available via MCP(Model Context Protocol) servers.";
+        // Consider making this dynamic based on available tools?
+        const dynamicSystemPrompt = `You are a helpful and informative assistant. You have access to external tools to help fulfill requests. Available tools: ${Object.keys(relevantTools).join(', ') || 'None'}.`;
+
 
         // --- Call Vercel AI SDK streamText ---
         let result;
         try {
-
-            // WORKAROUND: Disable tools entirely for Anthropic due to SDK incompatibility
-            let toolsForStream = mergedTools;
-            if (['anthropic'].includes(providerIdToUse)) {
-                console.warn(`[Chat API] WORKAROUND: Disabling tools for ${providerIdToUse} due to SDK incompatibility with stdio tools.`);
-                toolsForStream = {};
-            }
+            let toolsForStream = relevantTools;
 
             result = await streamText({
-                model: languageModel,
+                model: primaryLanguageModel,
                 system: dynamicSystemPrompt,
-                messages: messages, // Pass messages directly from request body
-                tools: toolsForStream, // Use conditional tools object
-                maxSteps: 5, // Enable multi-step tool calling (will be ineffective for Anthropic if tools are {})
-                // Add onFinish callback to close MCP clients
-                onFinish: async () => {
-                    console.log("Stream finished.");
-
-                    // Close MCP clients
-                    console.log("[onFinish] Closing MCP clients...");
-                    const closePromises = mcpClients.map(async (client, index) => {
-                        try {
-                            await client.close();
-                        } catch (closeError) {
-                            console.error(`[onFinish] Error closing MCP client ${index + 1}:`, closeError);
-                        }
-                    });
-                    await Promise.all(closePromises);
-                    console.log("[onFinish] All MCP clients closed.");
+                messages: messages,
+                tools: toolsForStream, // Use the relevant (and potentially filtered) tools
+                maxSteps: 15, // Increased max steps
+                onFinish: async (finishData) => {
+                    console.log("Stream finished.", finishData);
+                    // Close only the initialized clients via the manager
+                    if (mcpManager) {
+                        await mcpManager.closeInitializedClients();
+                    }
                 },
             });
         } catch (streamError) {
-            // Catch errors specifically from streamText
             console.error('[Chat API] Error during streamText execution:', streamError);
-            // Ensure MCP clients are closed even if streamText fails
-            const closePromises = mcpClients.map(client => client.close().catch(e => console.error("Error closing MCP client after streamText error:", e)));
-            await Promise.all(closePromises);
+            // Ensure initialized MCP clients are closed even if streamText fails
+            if (mcpManager) {
+                await mcpManager.closeInitializedClients();
+            }
             throw streamError;
         }
 
 
         // --- Return Streaming Response ---
-        return new Response(result.toDataStream(), {
-            headers: {
-                'Content-Type': 'text/event-stream',
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-            },
-        });
+        // Use toDataStreamResponse() which formats the stream correctly for useChat
+        return result.toDataStreamResponse();
 
     } catch (error) {
         console.error('[Chat API Error]', error);
+        // Ensure manager closes clients if an error occurred before streamText onFinish
+        if (mcpManager) {
+            await mcpManager.closeInitializedClients().catch(closeError => {
+                console.error('[Chat API Error] Failed to close MCP clients during error handling:', closeError);
+            });
+        }
         const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
         return NextResponse.json({ error: `Failed to process chat request: ${errorMessage}` }, { status: 500 });
     }

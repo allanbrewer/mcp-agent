@@ -7,6 +7,7 @@ mcp-gsuite/
 github-mcp-server/
 web-search/
 duckduckgo-mcp-server/
+servers/
 
 # Ignore the cloned source code directory
 cline/

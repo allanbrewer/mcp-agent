@@ -11,12 +11,13 @@ declare const window: CustomWindow;
 
 interface ChatInputProps {
     value: string;
-    // Update onChange prop to accept the event directly
     onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => void;
     onSend: (text: string) => void;
+    status: 'error' | 'submitted' | 'streaming' | 'ready'; // Add status prop
+    onStop: () => void; // Add onStop prop
 }
 
-const ChatInput: React.FC<ChatInputProps> = ({ value, onChange, onSend }) => {
+const ChatInput: React.FC<ChatInputProps> = ({ value, onChange, onSend, status, onStop }) => {
     const [isRecording, setIsRecording] = useState(false);
     const [isSpeechApiAvailable, setIsSpeechApiAvailable] = useState(false);
     const [statusMessage, setStatusMessage] = useState('');
@@ -192,16 +193,32 @@ const ChatInput: React.FC<ChatInputProps> = ({ value, onChange, onSend }) => {
                 >
                     {isRecording ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
                 </button>
-                {/* Send Button */}
-                <button
-                    type="button"
-                    className="ml-2 p-1.5 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 rounded-md disabled:opacity-30 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    onClick={handleSendClick}
-                    disabled={!value.trim() || isRecording} // Disable send while recording
-                    title="Send Message"
-                >
-                    <SendHorizontal className="w-5 h-5" /> {/* Using Lucide icon */}
-                </button>
+                {/* Conditional Send/Stop Button */}
+                {status === 'submitted' || status === 'streaming' ? (
+                    // Stop Button
+                    <button
+                        type="button"
+                        className="ml-2 p-1.5 text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500"
+                        onClick={onStop} // Call the stop function from context
+                        title="Stop Generation"
+                    >
+                        {/* Simple Square Stop Icon */}
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V8a1 1 0 00-1-1H8z" clipRule="evenodd" />
+                        </svg>
+                    </button>
+                ) : (
+                    // Send Button
+                    <button
+                        type="button"
+                        className="ml-2 p-1.5 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 rounded-md disabled:opacity-30 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        onClick={handleSendClick}
+                        disabled={!value.trim() || isRecording} // Disable send while recording or if input empty
+                        title="Send"
+                    >
+                        <SendHorizontal className="w-5 h-5" /> {/* Using Lucide icon */}
+                    </button>
+                )}
             </div>
             {/* Status Message Area */}
             {statusMessage && (

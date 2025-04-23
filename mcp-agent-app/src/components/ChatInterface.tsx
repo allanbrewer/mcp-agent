@@ -3,20 +3,8 @@
 import React, { useEffect, useRef, FormEvent } from 'react';
 import Message from './Message';
 import ChatInput from './ChatInput';
-// Import context hook and MessageData type (for mapping)
-import { useChat as useChatContext, MessageData } from '@/context/ChatContext';
-// Import AiMessage type for mapping function
-import { type Message as AiMessage } from '@ai-sdk/react';
-
-// Helper function to map context's AiMessage to MessageData for display
-function mapAiMessageToMessageData(aiMsg: AiMessage): MessageData {
-    // Basic mapping, assuming 'assistant' role maps to 'llm'
-    // TODO: Handle tool/data roles if needed for display
-    return {
-        sender: aiMsg.role === 'user' ? 'user' : 'llm',
-        text: aiMsg.content,
-    };
-}
+import { useChat as useChatContext } from '@/context/ChatContext';
+import ToolInvocationPart from './ToolInvocationPart';
 
 const ChatInterface: React.FC = () => {
     // Destructure everything needed directly from the context
@@ -25,8 +13,9 @@ const ChatInterface: React.FC = () => {
         input,
         handleInputChange,
         handleSubmit,
-        isLoading,
+        status,
         error,
+        stop, // <<< Get stop function from context
     } = useChatContext();
 
     const messagesEndRef = useRef<null | HTMLDivElement>(null);
@@ -35,9 +24,6 @@ const ChatInterface: React.FC = () => {
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
-
-    // Map context's AiMessage[] to MessageData[] for rendering
-    const displayMessages = messages.map(mapAiMessageToMessageData);
 
     // Wrapper for form submission using handleSubmit from context
     const handleFormSubmit = (e: FormEvent<HTMLFormElement>) => {
@@ -61,7 +47,7 @@ const ChatInterface: React.FC = () => {
         <div className="flex flex-col h-full w-full max-w-5xl mx-auto px-4 pt-6 pb-2">
             {/* Message display area */}
             <div className="flex-grow overflow-y-auto mb-4 pr-2 flex flex-col">
-                {displayMessages.length === 0 ? (
+                {messages.length === 0 ? (
                     // Initial Welcome Message State
                     <div className="flex-grow flex flex-col items-center justify-center text-center">
                         <h1 className="text-4xl font-semibold animate-text-gradient">
@@ -69,15 +55,60 @@ const ChatInterface: React.FC = () => {
                         </h1>
                     </div>
                 ) : (
-                    // Regular Message Display using messages from context
+                    // Render messages directly, handling different roles and parts
                     <div className="space-y-2">
-                        {displayMessages.map((msg, index) => (
-                            <Message
-                                key={messages[index].id} // Use stable ID from context's messages
-                                sender={msg.sender}
-                                text={msg.text}
-                            />
-                        ))}
+                        {messages.map((msg) => {
+                            if (msg.role === 'user') {
+                                return (
+                                    <Message
+                                        key={msg.id}
+                                        sender="user"
+                                        text={msg.content}
+                                    />
+                                );
+                            } else if (msg.role === 'assistant') {
+                                // Check for parts - render parts if they exist
+                                if (msg.parts && msg.parts.length > 0) {
+                                    // Wrap the mapped parts in a Fragment with a key
+                                    return (
+                                        <React.Fragment key={`${msg.id}-parts`}>
+                                            {msg.parts.map((part, index) => {
+                                                if (part.type === 'text') {
+                                                    // Render text part using Message component styling
+                                                    return (
+                                                        <Message
+                                                            key={`${msg.id}-part-${index}`}
+                                                            sender="llm"
+                                                            text={part.text}
+                                                        />
+                                                    );
+                                                } else if (part.type === 'tool-invocation') {
+                                                    // Render tool invocation part using new component
+                                                    return (
+                                                        <ToolInvocationPart
+                                                            key={`${msg.id}-part-${index}`}
+                                                            toolInvocation={part.toolInvocation as any} // Use 'any' for now
+                                                        />
+                                                    );
+                                                }
+                                                return null; // Handle other part types if necessary
+                                            })}
+                                        </React.Fragment>
+                                    );
+                                } else {
+                                    // Fallback: Render assistant message content directly if no parts
+                                    return (
+                                        <Message
+                                            key={msg.id} // Corrected key
+                                            sender="llm"
+                                            text={msg.content} // Corrected content source
+                                        />
+                                    );
+                                }
+                            }
+                            // Ignore other roles like 'system', 'tool' for now
+                            return null;
+                        })}
                     </div>
                 )}
                 <div ref={messagesEndRef} />
@@ -86,18 +117,48 @@ const ChatInterface: React.FC = () => {
             {/* Input Area Container - Use a form for handleSubmit */}
             <form onSubmit={handleFormSubmit} className="relative mb-2">
                 <ChatInput
-                    value={input} // Use input from context
-                    onChange={handleInputChange} // Use handler from context
-                    onSend={handleSendWrapper} // Use wrapper to trigger submit
+                    value={input}
+                    onChange={handleInputChange}
+                    onSend={handleSendWrapper}
+                    status={status} // <<< Pass status down
+                    onStop={stop} // <<< Pass stop function down
                 />
             </form>
 
-            {/* Status Display Area */}
+            {/* Status Display Area - Calculate step count and show thinking animation */}
             <div className="text-center text-xs text-gray-500 dark:text-gray-400 pt-1 h-5">
-                {isLoading ? "Generating response..." : error ? `Error: ${error.message}` : ""}
+                {status === 'streaming' || status === 'submitted' ? (() => {
+                    // Find the index of the last user message
+                    const lastUserMessageIndex = messages.findLastIndex(m => m.role === 'user');
+                    let stepCount = 0;
+
+                    // Iterate through messages *after* the last user message
+                    if (lastUserMessageIndex !== -1) {
+                        for (let i = lastUserMessageIndex + 1; i < messages.length; i++) {
+                            const msg = messages[i];
+                            if (msg.role === 'assistant' && msg.parts) {
+                                // Count any tool invocation part as a step
+                                stepCount += msg.parts.filter(p => p.type === 'tool-invocation').length;
+                            }
+                        }
+                    }
+
+                    // Display step number (Step 1 = first tool call)
+                    const displayStep = stepCount > 0 ? ` (Step ${stepCount})` : '';
+
+                    return (
+                        <span className="inline-flex items-center animate-text-gradient">
+                            Thinking{displayStep}...
+                        </span>
+                    );
+                })() : error ? (
+                    `Error: ${error.message}`
+                ) : (
+                    ""
+                )}
             </div>
             {/* Placeholder for height consistency */}
-            {!isLoading && !error && <div className="h-5 pt-1"></div>}
+            {status === 'ready' && !error && <div className="h-5 pt-1"></div>}
         </div>
     ); // Ensure closing parenthesis is present
 }; // Ensure closing brace is present
