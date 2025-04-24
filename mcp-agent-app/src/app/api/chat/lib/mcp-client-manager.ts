@@ -113,18 +113,42 @@ export class McpClientManager {
     /**
      * Initializes MCP clients for the specified server IDs.
      */
-    async initializeClients(serverIds: string[]): Promise<void> {
-        console.log(`[McpClientManager] Attempting to initialize clients for IDs: ${serverIds.join(', ')}`);
-        const serversToInitialize = this.mcpConfig.servers.filter(server => serverIds.includes(server.id));
+    async initializeClients(requestedServerIds: string[]): Promise<void> {
+        // Identify servers marked with alwaysInitialize
+        const alwaysInitializeIds = this.mcpConfig.servers
+            .filter(server => server.alwaysInitialize === true)
+            .map(server => server.id);
 
-        if (serversToInitialize.length !== serverIds.length) {
-            const foundIds = serversToInitialize.map(s => s.id);
-            const missingIds = serverIds.filter(id => !foundIds.includes(id));
-            console.warn(`[McpClientManager] Could not find configuration for server IDs: ${missingIds.join(', ')}`);
+        // Combine requested IDs with always-initialize IDs, ensuring uniqueness
+        const combinedServerIds = [...new Set([...alwaysInitializeIds, ...requestedServerIds])];
+
+        console.log(`[McpClientManager] Requested IDs: [${requestedServerIds.join(', ')}], Always Initialize IDs: [${alwaysInitializeIds.join(', ')}], Combined IDs: [${combinedServerIds.join(', ')}]`);
+
+        // Filter the main config based on the combined list
+        const serversToInitialize = this.mcpConfig.servers.filter(server => combinedServerIds.includes(server.id));
+
+        // Log if any *requested* servers were not found (already covered by alwaysInitialize is fine)
+        const foundIdsInCombined = serversToInitialize.map(s => s.id);
+        const missingRequestedIds = requestedServerIds.filter(id => !foundIdsInCombined.includes(id));
+        if (missingRequestedIds.length > 0) {
+            console.warn(`[McpClientManager] Could not find configuration for specifically requested server IDs: ${missingRequestedIds.join(', ')}`);
         }
 
+        // --- Proceed with initialization using serversToInitialize ---
+        if (serversToInitialize.length === 0) {
+            console.log("[McpClientManager] No servers determined for initialization.");
+            return;
+        }
+
+        console.log(`[McpClientManager] Final servers to initialize: [${serversToInitialize.map(s => s.id).join(', ')}]`);
+
         const initPromises = serversToInitialize.map(async (serverConfig) => {
+            // (Rest of the loop remains the same)
             if (this.clients.has(serverConfig.id)) {
+                // This warning is now handled above more specifically
+                // const missingIds = serverIds.filter(id => !foundIds.includes(id));
+                // console.warn(`[McpClientManager] Could not find configuration for server IDs: ${missingIds.join(', ')}`);
+                // (Rest of the loop continues from here)
                 console.log(`[McpClientManager] Client for ${serverConfig.id} already initialized.`);
                 return;
             }

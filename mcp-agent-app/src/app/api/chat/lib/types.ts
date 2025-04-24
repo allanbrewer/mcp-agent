@@ -23,6 +23,7 @@ export interface McpServerCommandConfig {
 export interface McpServerConfig {
     id: string;
     description: string;
+    alwaysInitialize?: boolean; // Flag to always initialize this server
     command: McpServerCommandConfig;
     tools: McpToolConfig[];
 }
