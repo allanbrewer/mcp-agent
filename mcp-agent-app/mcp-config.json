@@ -104,9 +104,9 @@
                     "@modelcontextprotocol/server-memory"
                 ],
                 "argSubstitutions": {},
-                "env": {
-                    "MEMORY_FILE_PATH": "/Users/abrewer/projects/mcp-agent/mcp-agent-app/memory.json"
-                }
+                "envVars": [
+                    "MEMORY_FILE_PATH"
+                ]
             }
         },
         {
@@ -143,9 +143,24 @@
                     "@modelcontextprotocol/server-gdrive"
                 ],
                 "argSubstitutions": {},
-                "env": {
-                    "GDRIVE_CREDENTIALS_PATH": "/Users/abrewer/projects/mcp-agent/servers/.gdrive-server-credentials.json"
-                }
+                "envVars": [
+                    "GDRIVE_CREDENTIALS_PATH"
+                ]
+            }
+        },
+        {
+            "id": "google-maps",
+            "description": "MCP server for Google Maps API interactions.",
+            "command": {
+                "defaultExecutable": "npx",
+                "argsTemplate": [
+                    "-y",
+                    "@modelcontextprotocol/server-google-maps"
+                ],
+                "argSubstitutions": {},
+                "envVars": [
+                    "GOOGLE_MAPS_API_KEY"
+                ]
             }
         }
     ]
