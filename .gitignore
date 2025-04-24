@@ -8,6 +8,7 @@ github-mcp-server/
 web-search/
 duckduckgo-mcp-server/
 servers/
+DesktopCommanderMCP/
 
 # Ignore the cloned source code directory
 cline/

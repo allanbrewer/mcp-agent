@@ -81,37 +81,6 @@
             }
         },
         {
-            "id": "filesystem",
-            "description": "Node.js server implementing MCP for filesystem operations (read/write files, list/create/delete dirs, move, search). Operates only within specified directories.",
-            "command": {
-                "defaultExecutable": "npx",
-                "argsTemplate": [
-                    "-y",
-                    "@modelcontextprotocol/server-filesystem",
-                    "{FS_ALLOWED_DIR_1}",
-                    "{FS_ALLOWED_DIR_2}"
-                ],
-                "argSubstitutions": {
-                    "{FS_ALLOWED_DIR_1}": "FILESYSTEM_ALLOWED_DIR_1",
-                    "{FS_ALLOWED_DIR_2}": "FILESYSTEM_ALLOWED_DIR_2"
-                },
-                "envVars": []
-            }
-        },
-        {
-            "id": "puppeteer",
-            "description": "Node.js server that provides browser automation capabilities using Puppeteer. This server enables LLMs to interact with web pages, take screenshots, and execute JavaScript in a real browser environment.",
-            "command": {
-                "defaultExecutable": "npx",
-                "argsTemplate": [
-                    "-y",
-                    "@modelcontextprotocol/server-puppeteer"
-                ],
-                "argSubstitutions": {},
-                "envVars": []
-            }
-        },
-        {
             "id": "sequential-thinking",
             "description": "Node.js server implementation that provides a tool for dynamic and reflective problem-solving through a structured thinking process.",
             "command": {
@@ -127,6 +96,7 @@
         {
             "id": "memory",
             "description": "Node.js server A basic implementation of persistent memory using a local knowledge graph. This lets the LLM models remember information about the user across chats.",
+            "alwaysInitialize": true,
             "command": {
                 "defaultExecutable": "npx",
                 "argsTemplate": [
@@ -140,15 +110,42 @@
             }
         },
         {
-            "id": "web-search",
-            "description": "Node.js server for performing google web searches and retrieving page content.",
+            "id": "desktop-commander",
+            "description": "Node.js server that allows LLM to execute long-running terminal commands on your computer and manage processes through Model Context Protocol (MCP) + Built on top of MCP Filesystem Server to provide additional search and replace file editing capabilities.",
             "command": {
-                "defaultExecutable": "node",
+                "defaultExecutable": "npx",
                 "argsTemplate": [
-                    "/Users/abrewer/projects/mcp-agent/web-search/build/index.js"
+                    "-y",
+                    "@wonderwhy-er/desktop-commander"
                 ],
                 "argSubstitutions": {},
                 "envVars": []
+            }
+        },
+        {
+            "id": "browsermcp",
+            "description": "MCP server for automating your browser.",
+            "command": {
+                "defaultExecutable": "npx",
+                "argsTemplate": [
+                    "@browsermcp/mcp@latest"
+                ],
+                "argSubstitutions": {},
+                "envVars": []
+            }
+        },
+        {
+            "id": "gdrive",
+            "description": "MCP server integrates with Google Drive to allow listing, reading, and searching over files.",
+            "command": {
+                "defaultExecutable": "npx",
+                "argsTemplate": [
+                    "@modelcontextprotocol/server-gdrive"
+                ],
+                "argSubstitutions": {},
+                "env": {
+                    "GDRIVE_CREDENTIALS_PATH": "/Users/abrewer/projects/mcp-agent/servers/.gdrive-server-credentials.json"
+                }
             }
         }
     ]
