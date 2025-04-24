@@ -129,9 +129,16 @@ export class McpClientManager {
 
         // Log if any *requested* servers were not found (already covered by alwaysInitialize is fine)
         const foundIdsInCombined = serversToInitialize.map(s => s.id);
-        const missingRequestedIds = requestedServerIds.filter(id => !foundIdsInCombined.includes(id));
-        if (missingRequestedIds.length > 0) {
-            console.warn(`[McpClientManager] Could not find configuration for specifically requested server IDs: ${missingRequestedIds.join(', ')}`);
+        const missingRequestedIds = requestedServerIds.filter(id => !this.mcpConfig.servers.some(server => server.id === id));
+        const overriddenByAlwaysInitialize = requestedServerIds.filter(id => !missingRequestedIds.includes(id) && !foundIdsInCombined.includes(id));
+        if (missingRequestedIds.length > 0 || overriddenByAlwaysInitialize.length > 0) {
+            console.warn(`[McpClientManager] Warning:`);
+            if (missingRequestedIds.length > 0) {
+                console.warn(`  - Could not find configuration for the following requested server IDs: ${missingRequestedIds.join(', ')}`);
+            }
+            if (overriddenByAlwaysInitialize.length > 0) {
+                console.warn(`  - The following requested server IDs were overridden by the alwaysInitialize flag: ${overriddenByAlwaysInitialize.join(', ')}`);
+            }
         }
 
         // --- Proceed with initialization using serversToInitialize ---
