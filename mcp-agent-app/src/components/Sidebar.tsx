@@ -128,7 +128,7 @@ const Sidebar: React.FC = () => {
                 {hasMounted && isExpanded && (
                     <div className="flex items-center space-x-2">
                         <BrainCircuit className="w-6 h-6 text-gray-800 dark:text-gray-200" />
-                        <span className="font-semibold text-lg text-gray-800 dark:text-gray-200">MCP Agent</span>
+                        <span className="font-semibold text-lg text-gray-800 dark:text-gray-200">bAI MCP</span>
                     </div>
                 )}
                 {(!hasMounted || !isExpanded) && <div className="w-6 h-6"></div>}
