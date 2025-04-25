@@ -160,11 +160,9 @@ export async function POST(request: NextRequest) {
 
         // --- Step 2 & 3: Initialize Manager & Relevant Clients ---
         mcpManager = new McpClientManager(mcpConfig); // Instantiate the manager
-        if (neededServerIds.length > 0) {
-            await mcpManager.initializeClients(neededServerIds);
-        } else {
-            console.log("[Chat API] No relevant server IDs determined. Proceeding without MCP tools.");
-        }
+        // Always call initializeClients. The manager will handle merging alwaysInitialize servers.
+        // Pass the potentially empty neededServerIds array.
+        await mcpManager.initializeClients(neededServerIds);
 
 
         // --- Step 4: Get Tools & Call streamText ---
