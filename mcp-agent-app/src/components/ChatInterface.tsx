@@ -3,8 +3,17 @@
 import React, { useEffect, useRef, FormEvent } from 'react';
 import Message from './Message';
 import ChatInput from './ChatInput';
-import { useChat as useChatContext } from '@/context/ChatContext';
+// Import Attachment type defined in ChatContext
+import { useChat as useChatContext, type Attachment } from '@/context/ChatContext';
 import ToolInvocationPart from './ToolInvocationPart';
+
+// Define Attachment type locally matching the one in ChatContext
+// interface AttachmentForSubmit {
+//     name?: string;
+//     contentType?: string;
+//     url: string; // This will be the Data URL
+// }
+
 
 const ChatInterface: React.FC = () => {
     // Destructure everything needed directly from the context
@@ -12,7 +21,7 @@ const ChatInterface: React.FC = () => {
         messages, // These are AiMessage[] from the hook inside the context
         input,
         handleInputChange,
-        handleSubmit,
+        handleSubmit, // This now correctly accepts the options object
         status,
         error,
         stop, // <<< Get stop function from context
@@ -25,22 +34,45 @@ const ChatInterface: React.FC = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
 
-    // Wrapper for form submission using handleSubmit from context
-    const handleFormSubmit = (e: FormEvent<HTMLFormElement>) => {
-        e.preventDefault();
-        handleSubmit(e); // Call the context's (hook's) submit handler
-    };
+    // This form wrapper is likely redundant now, relying on button click
+    // const handleFormSubmit = (e: FormEvent<HTMLFormElement>) => {
+    //     e.preventDefault();
+    //     handleSubmit(e);
+    // };
 
-    // Wrapper for ChatInput's onSend
-    const handleSendWrapper = (text: string) => {
-        // Simulate form submission event to trigger handleSubmit from context
-        const fakeForm = document.createElement('form');
-        // Create a basic event object; the hook primarily uses the 'input' state
-        const fakeEvent = {
-            preventDefault: () => { },
-            currentTarget: fakeForm,
-        } as unknown as FormEvent<HTMLFormElement>;
-        handleSubmit(fakeEvent);
+    // Wrapper for ChatInput's onSend, now accepting the AttachedFile structure
+    const handleSendWrapper = (text: string, file?: { name: string; type: string; dataUrl: string }) => {
+
+        // Prepare attachments array if file exists
+        let attachmentsForSubmit: Attachment[] | undefined = undefined;
+        if (file) {
+            attachmentsForSubmit = [{
+                name: file.name,
+                contentType: file.type,
+                url: file.dataUrl
+            }];
+        }
+
+        // Update the input state with ONLY the text part
+        const syntheticEvent = {
+            target: { value: text } // Only pass the typed text
+        } as React.ChangeEvent<HTMLTextAreaElement>;
+        handleInputChange(syntheticEvent);
+
+        // Use a minimal timeout to allow state update before submitting
+        setTimeout(() => {
+            // Simulate form submission event for the first argument
+            const fakeForm = document.createElement('form');
+            const fakeEvent = {
+                preventDefault: () => { },
+                currentTarget: fakeForm,
+            } as unknown as FormEvent<HTMLFormElement>;
+
+            // Call handleSubmit from context with the event and the options object
+            handleSubmit(fakeEvent, {
+                experimental_attachments: attachmentsForSubmit
+            });
+        }, 0);
     };
 
     return (
@@ -58,55 +90,71 @@ const ChatInterface: React.FC = () => {
                     // Render messages directly, handling different roles and parts
                     <div className="space-y-2">
                         {messages.map((msg) => {
+                            // --- Render User Message ---
                             if (msg.role === 'user') {
                                 return (
                                     <Message
                                         key={msg.id}
                                         sender="user"
                                         text={msg.content}
+                                    // TODO: Add rendering for attachments if needed here
+                                    // attachments={msg.experimental_attachments}
                                     />
                                 );
-                            } else if (msg.role === 'assistant') {
+                            }
+                            // --- Render Assistant Message ---
+                            else if (msg.role === 'assistant') {
                                 // Check for parts - render parts if they exist
                                 if (msg.parts && msg.parts.length > 0) {
-                                    // Wrap the mapped parts in a Fragment with a key
                                     return (
                                         <React.Fragment key={`${msg.id}-parts`}>
                                             {msg.parts.map((part, index) => {
                                                 if (part.type === 'text') {
                                                     // Render text part using Message component styling
-                                                    return (
-                                                        <Message
-                                                            key={`${msg.id}-part-${index}`}
-                                                            sender="llm"
-                                                            text={part.text}
-                                                        />
-                                                    );
+                                                    // Only render if text is not empty, as parts might contain only tool calls
+                                                    if (part.text.trim()) {
+                                                        return (
+                                                            <Message
+                                                                key={`${msg.id}-part-${index}-text`}
+                                                                sender="llm"
+                                                                text={part.text}
+                                                            />
+                                                        );
+                                                    }
+                                                    return null; // Don't render empty text parts
                                                 } else if (part.type === 'tool-invocation') {
-                                                    // Render tool invocation part using new component
+                                                    // Render tool invocation part
                                                     return (
                                                         <ToolInvocationPart
-                                                            key={`${msg.id}-part-${index}`}
-                                                            toolInvocation={part.toolInvocation as any} // Use 'any' for now
+                                                            key={`${msg.id}-part-${index}-tool`}
+                                                            toolInvocation={part.toolInvocation as any} // Cast for now
                                                         />
                                                     );
                                                 }
-                                                return null; // Handle other part types if necessary
+                                                // Add rendering for other part types if needed (e.g., step-start)
+                                                // else if (part.type === 'step-start' && index > 0) {
+                                                //     return <hr key={`${msg.id}-part-${index}-step`} className="my-2 border-gray-300 dark:border-gray-600" />;
+                                                // }
+                                                return null;
                                             })}
                                         </React.Fragment>
                                     );
                                 } else {
                                     // Fallback: Render assistant message content directly if no parts
-                                    return (
-                                        <Message
-                                            key={msg.id} // Corrected key
-                                            sender="llm"
-                                            text={msg.content} // Corrected content source
-                                        />
-                                    );
+                                    // Only render if content is not empty
+                                    if (msg.content.trim()) {
+                                        return (
+                                            <Message
+                                                key={`${msg.id}-content`}
+                                                sender="llm"
+                                                text={msg.content}
+                                            />
+                                        );
+                                    }
+                                    return null; // Don't render empty assistant messages
                                 }
                             }
-                            // Ignore other roles like 'system', 'tool' for now
+                            // Ignore other roles like 'system', 'tool' for display for now
                             return null;
                         })}
                     </div>
@@ -114,38 +162,31 @@ const ChatInterface: React.FC = () => {
                 <div ref={messagesEndRef} />
             </div>
 
-            {/* Input Area Container - Use a form for handleSubmit */}
-            <form onSubmit={handleFormSubmit} className="relative mb-2">
+            {/* Input Area Container - Removed form wrapper, rely on button click */}
+            <div className="relative mb-2">
                 <ChatInput
                     value={input}
                     onChange={handleInputChange}
-                    onSend={handleSendWrapper}
-                    status={status} // <<< Pass status down
-                    onStop={stop} // <<< Pass stop function down
+                    onSend={handleSendWrapper} // Pass the updated wrapper
+                    status={status}
+                    onStop={stop}
                 />
-            </form>
+            </div>
 
-            {/* Status Display Area - Calculate step count and show thinking animation */}
+            {/* Status Display Area */}
             <div className="text-center text-xs text-gray-500 dark:text-gray-400 pt-1 h-5">
                 {status === 'streaming' || status === 'submitted' ? (() => {
-                    // Find the index of the last user message
                     const lastUserMessageIndex = messages.findLastIndex(m => m.role === 'user');
                     let stepCount = 0;
-
-                    // Iterate through messages *after* the last user message
                     if (lastUserMessageIndex !== -1) {
                         for (let i = lastUserMessageIndex + 1; i < messages.length; i++) {
                             const msg = messages[i];
                             if (msg.role === 'assistant' && msg.parts) {
-                                // Count any tool invocation part as a step
                                 stepCount += msg.parts.filter(p => p.type === 'tool-invocation').length;
                             }
                         }
                     }
-
-                    // Display step number (Step 1 = first tool call)
                     const displayStep = stepCount > 0 ? ` (Step ${stepCount})` : '';
-
                     return (
                         <span className="inline-flex items-center animate-text-gradient">
                             Thinking{displayStep}...
@@ -160,7 +201,7 @@ const ChatInterface: React.FC = () => {
             {/* Placeholder for height consistency */}
             {status === 'ready' && !error && <div className="h-5 pt-1"></div>}
         </div>
-    ); // Ensure closing parenthesis is present
-}; // Ensure closing brace is present
+    );
+};
 
 export default ChatInterface;

@@ -10,7 +10,10 @@ import React, {
     ChangeEvent,
     FormEvent
 } from 'react';
+// Import UI Part types/shapes based on documentation
+// Remove ChatRequestOptions import
 import { useChat as useAiChat, type Message as AiMessage } from '@ai-sdk/react';
+// Define local interfaces for UI parts based on documentation for clarity in mapping
 interface TextUIPart { type: "text"; text: string; }
 interface ToolInvocationForLoading { // Reconstructing the 'call' state from saved data
     state: 'call'; // Assume 'call' state when loading saved ToolCallPart
@@ -19,14 +22,30 @@ interface ToolInvocationForLoading { // Reconstructing the 'call' state from sav
     args: any;
 }
 interface ToolInvocationUIPart { type: "tool-invocation"; toolInvocation: ToolInvocationForLoading; }
+// Add other UI part types like ReasoningUIPart etc. here if needed for loading/display later
 type AiMessagePartForLoading = TextUIPart | ToolInvocationUIPart;
 
+// Import Core types needed
 import { CoreMessage, CoreUserMessage, CoreAssistantMessage, TextPart, ToolCallPart, type ToolInvocation } from 'ai';
 import llmConfigData from '../../llm-config.json';
 
+// Define Attachment type based on Vercel AI SDK docs
+export interface Attachment {
+    name?: string;
+    contentType?: string;
+    url: string; // Data URL or regular URL
+}
+
+// Define local type for handleSubmit options based on docs
+interface SubmitOptions {
+    experimental_attachments?: Attachment[];
+    // Add other options like data, headers, body if needed later
+}
+
+
 // Keep MessageData for potential display mapping if needed, but primary state is AiMessage
 export interface MessageData {
-    sender: 'user' | 'llm' | 'tool';
+    sender: 'user' | 'llm' | 'tool'; // Keep 'tool' here for potential future display logic if needed
     text: string;
 }
 
@@ -40,7 +59,7 @@ export interface ChatMetadata {
 
 // Full record for saving/loading - uses CoreMessage[] for history
 export interface ChatRecord extends ChatMetadata {
-    history: CoreMessage[];
+    history: CoreMessage[]; // This can still contain CoreToolMessage if loaded from elsewhere, but saveCurrentChat won't create them
     systemPrompt?: string;
     providerId?: string;
     modelId?: string;
@@ -73,7 +92,8 @@ interface ChatContextType {
     messages: AiMessage[]; // Use AiMessage type from the hook
     input: string;
     handleInputChange: (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
-    handleSubmit: (e: FormEvent<HTMLFormElement>) => void;
+    // Update handleSubmit signature to use local SubmitOptions type
+    handleSubmit: (e: FormEvent<HTMLFormElement>, chatRequestOptions?: SubmitOptions) => void;
     status: 'error' | 'submitted' | 'streaming' | 'ready';
     error: Error | undefined;
     reload: () => void;
@@ -168,6 +188,10 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             if (!response.ok) throw new Error(`Failed to load chat: ${response.statusText}`);
             const chatData: ChatRecord = await response.json();
 
+            // --- DEBUG LOG: Inspect history loaded from DB ---
+            // console.log('Loaded chatData.history from DB:', JSON.stringify(chatData.history, null, 2));
+            // --- END DEBUG LOG ---
+
             // Sync provider/model from loaded chat back to context state
             const loadedProviderId = chatData.providerId || initialProviderId;
             const loadedModelId = chatData.modelId || initialModelId;
@@ -176,6 +200,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
             // Map loaded CoreMessage[] history to AiMessage[]
             const loadedAiMessages: AiMessage[] = (chatData.history || [])
+                // Filter only user/assistant roles from saved history
                 .filter(coreMsg => coreMsg.role === 'user' || coreMsg.role === 'assistant')
                 .map((coreMsg, index): AiMessage => {
                     const baseAiMsg = {
@@ -199,7 +224,11 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                             console.warn(`[loadChat] Assistant message content was array but mapping yielded no UI parts. Stringifying: ${contentStr}`);
                             baseAiMsg.content = contentStr;
                         }
-                    } else {
+                        // REMOVED: Logic for loading 'tool' role
+                        // } else if (coreMsg.role === 'tool' && Array.isArray(coreMsg.content) && coreMsg.content[0]?.type === 'tool-result') {
+                        //      // ... logic removed ...
+                    }
+                    else {
                         // Handle user messages or assistant messages with simple string content
                         const contentStr = typeof coreMsg.content === 'string' ? coreMsg.content : JSON.stringify(coreMsg.content);
                         baseAiMsg.content = contentStr;
@@ -262,6 +291,10 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const saveCurrentChat = useCallback(async (title: string): Promise<ChatRecord | null> => {
         const messagesForHistory: AiMessage[] = [...aiChatHook.messages];
 
+        // --- DEBUG LOG: Inspect message structure before saving ---
+        // console.log('Messages state before saving:', JSON.stringify(messagesForHistory, null, 2));
+        // --- END DEBUG LOG ---
+
         // Map messages, allowing null for roles we don't handle or empty messages
         const mappedHistory: (CoreUserMessage | CoreAssistantMessage | null)[] = messagesForHistory
             .map((aiMsg: AiMessage): CoreUserMessage | CoreAssistantMessage | null => {
@@ -320,6 +353,8 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         };
         console.log(`[CONTEXT saveCurrentChat] Attempting ${method} to ${url}`);
         console.log(`[CONTEXT saveCurrentChat] Title being sent:`, title);
+        // Limit logging potentially large history
+        // console.log(`[CONTEXT saveCurrentChat] Request Body being sent:`, JSON.stringify(requestBody, null, 2));
         console.log(`[CONTEXT saveCurrentChat] Sending ${historyToSave.length} messages.`);
 
         try {
@@ -368,6 +403,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             messages: aiChatHook.messages,
             input: aiChatHook.input,
             handleInputChange: aiChatHook.handleInputChange as (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void, // Re-add cast
+            // Pass the original handleSubmit from the hook, which accepts options
             handleSubmit: aiChatHook.handleSubmit,
             status: aiChatHook.status,
             error: aiChatHook.error,
