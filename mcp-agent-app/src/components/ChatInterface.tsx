@@ -40,17 +40,17 @@ const ChatInterface: React.FC = () => {
     //     handleSubmit(e);
     // };
 
-    // Wrapper for ChatInput's onSend, now accepting the AttachedFile structure
-    const handleSendWrapper = (text: string, file?: { name: string; type: string; dataUrl: string }) => {
+    // Wrapper for ChatInput's onSend, now accepting an array of files
+    const handleSendWrapper = (text: string, files?: { name: string; type: string; dataUrl: string }[]) => {
 
-        // Prepare attachments array if file exists
+        // Prepare attachments array if files exist
         let attachmentsForSubmit: Attachment[] | undefined = undefined;
-        if (file) {
-            attachmentsForSubmit = [{
+        if (files && files.length > 0) {
+            attachmentsForSubmit = files.map(file => ({
                 name: file.name,
                 contentType: file.type,
                 url: file.dataUrl
-            }];
+            }));
         }
 
         // Update the input state with ONLY the text part
