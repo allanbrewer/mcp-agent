@@ -266,8 +266,9 @@ const Sidebar: React.FC = () => {
                         title={currentChatId ? "Update Saved Chat" : "Save New Chat"}
                     >
                         <Save className={`w-4 h-4 ${hasMounted && isExpanded ? 'mr-2' : ''}`} />
+                        {/* Only show text when expanded */}
                         {hasMounted && isExpanded && <span>{isSaving ? 'Saving...' : (currentChatId ? 'Update Chat' : 'Save Chat')}</span>}
-                        {!isExpanded && <span>{isSaving ? '...' : (currentChatId ? 'U' : 'S')}</span>}
+                        {/* Removed the span that showed 'U' or 'S' when collapsed */}
                     </button>
                 )}
                 {hasMounted && isExpanded && <span className="block text-center text-xs text-gray-500">History stored via backend.</span>}
