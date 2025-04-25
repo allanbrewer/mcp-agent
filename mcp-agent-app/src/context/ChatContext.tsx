@@ -11,7 +11,17 @@ import React, {
     FormEvent
 } from 'react';
 import { useChat as useAiChat, type Message as AiMessage } from '@ai-sdk/react';
-import { CoreMessage, CoreUserMessage, CoreAssistantMessage } from 'ai';
+interface TextUIPart { type: "text"; text: string; }
+interface ToolInvocationForLoading { // Reconstructing the 'call' state from saved data
+    state: 'call'; // Assume 'call' state when loading saved ToolCallPart
+    toolCallId: string;
+    toolName: string;
+    args: any;
+}
+interface ToolInvocationUIPart { type: "tool-invocation"; toolInvocation: ToolInvocationForLoading; }
+type AiMessagePartForLoading = TextUIPart | ToolInvocationUIPart;
+
+import { CoreMessage, CoreUserMessage, CoreAssistantMessage, TextPart, ToolCallPart, type ToolInvocation } from 'ai';
 import llmConfigData from '../../llm-config.json';
 
 // Keep MessageData for potential display mapping if needed, but primary state is AiMessage
@@ -122,6 +132,33 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setCurrentModelId(initialModelId); // Reset model
     }, [aiChatHook, initialProviderId, initialModelId]);
 
+    // Helper function to map Core parts back to UI parts for loading/display
+    function mapCoreMessagePartsToAiMessageParts(coreContent: CoreMessage['content']): AiMessagePartForLoading[] | undefined {
+        if (!Array.isArray(coreContent)) return undefined; // Only process if content is an array of parts
+
+        const uiParts: AiMessagePartForLoading[] = [];
+        for (const part of coreContent) {
+            if (part.type === 'text') {
+                uiParts.push({ type: 'text', text: part.text });
+            } else if (part.type === 'tool-call') {
+                // Reconstruct the ToolInvocationUIPart structure assuming 'call' state
+                const toolInvocationData: ToolInvocationForLoading = {
+                    state: 'call', // Assume 'call' state when loading from saved CoreMessage
+                    toolCallId: part.toolCallId,
+                    toolName: part.toolName,
+                    args: part.args,
+                };
+                uiParts.push({
+                    type: 'tool-invocation',
+                    toolInvocation: toolInvocationData
+                });
+            }
+            // Ignore other core part types (like 'tool-result') when reconstructing UI parts for display
+        }
+        return uiParts.length > 0 ? uiParts : undefined;
+    }
+
+
     const loadChat = useCallback(async (chatId: string) => {
         setCurrentChatId(chatId);
         aiChatHook.stop(); // Stop any ongoing generation
@@ -140,11 +177,36 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             // Map loaded CoreMessage[] history to AiMessage[]
             const loadedAiMessages: AiMessage[] = (chatData.history || [])
                 .filter(coreMsg => coreMsg.role === 'user' || coreMsg.role === 'assistant')
-                .map((coreMsg, index) => ({
-                    id: `loaded-${chatId}-${index}`,
-                    role: coreMsg.role as 'user' | 'assistant', // Cast role
-                    content: typeof coreMsg.content === 'string' ? coreMsg.content : JSON.stringify(coreMsg.content),
-                }));
+                .map((coreMsg, index): AiMessage => {
+                    const baseAiMsg = {
+                        id: `loaded-${chatId}-${index}`,
+                        role: coreMsg.role as 'user' | 'assistant', // Role is guaranteed by filter
+                        content: '', // Initialize content, will be overwritten
+                        parts: undefined as AiMessage['parts'] | undefined, // Initialize parts
+                    };
+
+                    if (coreMsg.role === 'assistant' && Array.isArray(coreMsg.content)) {
+                        const uiParts = mapCoreMessagePartsToAiMessageParts(coreMsg.content);
+                        if (uiParts) {
+                            const textContent = uiParts
+                                .filter((p): p is TextUIPart => p.type === 'text')
+                                .map(p => p.text)
+                                .join('');
+                            baseAiMsg.content = textContent;
+                            baseAiMsg.parts = uiParts as AiMessage['parts'];
+                        } else {
+                            const contentStr = JSON.stringify(coreMsg.content);
+                            console.warn(`[loadChat] Assistant message content was array but mapping yielded no UI parts. Stringifying: ${contentStr}`);
+                            baseAiMsg.content = contentStr;
+                        }
+                    } else {
+                        // Handle user messages or assistant messages with simple string content
+                        const contentStr = typeof coreMsg.content === 'string' ? coreMsg.content : JSON.stringify(coreMsg.content);
+                        baseAiMsg.content = contentStr;
+                    }
+
+                    return baseAiMsg as AiMessage; // Cast the final object
+                });
 
             aiChatHook.setMessages(loadedAiMessages); // Set messages in the hook
 
@@ -168,50 +230,97 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
     }, []);
 
-    // saveCurrentChat: Reverted to require title, removed auto-save logic
+    // Helper function to map UI parts to Core parts for saving
+    function mapAiMessagePartsToCoreMessageParts(parts: AiMessage['parts']): (TextPart | ToolCallPart)[] {
+        if (!parts) return [];
+        const coreParts: (TextPart | ToolCallPart)[] = [];
+        for (const part of parts) {
+            if (part.type === 'text') {
+                coreParts.push({ type: 'text', text: part.text });
+            } else if (part.type === 'tool-invocation') {
+                // Ensure the structure matches ToolCallPart
+                // Cast toolInvocation, assuming it has the required fields
+                const toolInvocationData = part.toolInvocation as ToolInvocation; // Use imported type
+                if (toolInvocationData && toolInvocationData.toolCallId && toolInvocationData.toolName && toolInvocationData.args !== undefined) {
+                    coreParts.push({
+                        type: 'tool-call',
+                        toolCallId: toolInvocationData.toolCallId,
+                        toolName: toolInvocationData.toolName,
+                        args: toolInvocationData.args,
+                    });
+                } else {
+                    console.warn("[mapAiMessagePartsToCoreMessageParts] Skipping tool-invocation part due to missing data:", part);
+                }
+            }
+            // Ignore other UI-specific parts like 'reasoning', 'source', 'step-start' for saving
+        }
+        return coreParts;
+    }
+
+
+    // saveCurrentChat: Saves only user and assistant messages, handling parts correctly.
     const saveCurrentChat = useCallback(async (title: string): Promise<ChatRecord | null> => {
-        // Use current hook messages directly
         const messagesForHistory: AiMessage[] = [...aiChatHook.messages];
 
-        // Now map AiMessage[] to CoreMessage[]
-        const historyToSave: CoreMessage[] = messagesForHistory
-            .filter(aiMsg => aiMsg.role === 'user' || aiMsg.role === 'assistant')
-            .map(aiMsg => {
-                const contentStr = typeof aiMsg.content === 'string' ? aiMsg.content : JSON.stringify(aiMsg.content);
+        // Map messages, allowing null for roles we don't handle or empty messages
+        const mappedHistory: (CoreUserMessage | CoreAssistantMessage | null)[] = messagesForHistory
+            .map((aiMsg: AiMessage): CoreUserMessage | CoreAssistantMessage | null => {
                 if (aiMsg.role === 'user') {
-                    return { role: 'user', content: contentStr } as CoreUserMessage;
+                    // --- User Message ---
+                    const contentStr = typeof aiMsg.content === 'string' ? aiMsg.content : JSON.stringify(aiMsg.content);
+                    // Ensure content isn't just whitespace
+                    if (contentStr.trim() === '') return null;
+                    return { role: 'user', content: contentStr };
+
+                } else if (aiMsg.role === 'assistant') {
+                    // --- Assistant Message ---
+                    if (aiMsg.parts && aiMsg.parts.length > 0) {
+                        const coreParts = mapAiMessagePartsToCoreMessageParts(aiMsg.parts);
+                        // Only save if we actually mapped some core parts relevant for history
+                        if (coreParts.length > 0) {
+                            return { role: 'assistant', content: coreParts };
+                        } else {
+                            // If parts existed but none were mappable to core types, or only UI parts, save simple content as fallback
+                            const contentStr = typeof aiMsg.content === 'string' ? aiMsg.content : JSON.stringify(aiMsg.content);
+                            // Ensure content isn't just whitespace
+                            if (contentStr.trim() === '') return null;
+                            return { role: 'assistant', content: contentStr };
+                        }
+                    } else {
+                        // Fallback to string content if no parts array
+                        const contentStr = typeof aiMsg.content === 'string' ? aiMsg.content : JSON.stringify(aiMsg.content);
+                        // Ensure content isn't just whitespace
+                        if (contentStr.trim() === '') return null;
+                        return { role: 'assistant', content: contentStr };
+                    }
                 } else {
-                    return { role: 'assistant', content: contentStr } as CoreAssistantMessage;
+                    // Explicitly ignore other roles like 'system', 'data', 'tool' for saving
+                    return null;
                 }
             });
 
-        // Filter out messages with empty string content
-        const filteredHistory = historyToSave.filter(msg => {
-            return (msg.content as string).trim() !== '';
-        });
+        // Filter out any nulls (e.g. from empty messages or unhandled roles)
+        const historyToSave: CoreMessage[] = mappedHistory.filter(
+            (msg): msg is CoreUserMessage | CoreAssistantMessage => msg !== null
+        );
 
-        if (filteredHistory.length === 0) {
-            console.error("[CONTEXT] Cannot save chat with no valid user or LLM messages.");
+
+        if (historyToSave.length === 0) {
+            console.error("[CONTEXT] Cannot save chat with no valid user or assistant messages.");
             return null;
         }
 
         const url = currentChatId ? `/api/chats/${currentChatId}` : '/api/chats';
         const method = currentChatId ? 'PUT' : 'POST';
-
-        // --- Prepare Request Body ---
-        // Title is now always required by the function signature for POST/PUT
         const requestBody: any = {
-            title: title, // Use the provided title
-            history: filteredHistory,
+            title: title,
+            history: historyToSave, // Use the correctly filtered and typed history
             providerId: currentProviderId,
             modelId: currentModelId,
         };
-
-        // --- Logging before Fetch ---
         console.log(`[CONTEXT saveCurrentChat] Attempting ${method} to ${url}`);
         console.log(`[CONTEXT saveCurrentChat] Title being sent:`, title);
-        console.log(`[CONTEXT saveCurrentChat] Request Body being sent:`, JSON.stringify(requestBody, null, 2));
-        // --- End Logging ---
+        console.log(`[CONTEXT saveCurrentChat] Sending ${historyToSave.length} messages.`);
 
         try {
             const response = await fetch(url, {
@@ -219,14 +328,13 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(requestBody),
             });
-
             if (!response.ok) {
                 const errorData = await response.json();
                 throw new Error(errorData.message || `Failed to ${method} chat: ${response.statusText}`);
             }
             const savedOrUpdatedChat: ChatRecord = await response.json();
             triggerListRefresh();
-            if (!currentChatId) { // If it was a new chat, set its ID
+            if (!currentChatId) {
                 setCurrentChatId(savedOrUpdatedChat.id);
                 console.log(`[CONTEXT saveCurrentChat] New chat saved with ID: ${savedOrUpdatedChat.id}`);
             } else {
