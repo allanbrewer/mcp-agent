@@ -108,7 +108,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const [refreshCounter, setRefreshCounter] = useState(0);
 
     // --- LLM Selection State ---
-    const initialProviderId = llmConfig.providers[1]?.id || 'xai';
+    const initialProviderId = llmConfig.providers[0]?.id || 'google'; // Provider 0 is Google. Order defined by llm-config.json
     const initialProvider = llmConfig.providers.find(p => p.id === initialProviderId);
     if (!initialProvider) {
         throw new Error(`Initial provider configuration ('${initialProviderId}') not found in llm-config.json`);

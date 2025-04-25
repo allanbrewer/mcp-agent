@@ -19,6 +19,14 @@
                 {
                     "id": "gemini-2.0-flash-001",
                     "name": "Gemini 2.0 Flash"
+                },
+                {
+                    "id": "gemini-2.0-flash-exp-image-generation",
+                    "name": "Gemini 2.0 Flash Image Generation"
+                },
+                {
+                    "id": "imagen-3.0-generate-002",
+                    "name": "Imagen 3.0"
                 }
             ],
             "defaultModelId": "gemini-2.0-flash-001"

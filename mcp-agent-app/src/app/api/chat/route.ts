@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
 
 
         // --- Determine Primary Provider and Model ---
-        const providerIdToUse = requestedProviderId || 'xai'; // Default primary provider
+        const providerIdToUse = requestedProviderId || 'google'; // Default primary provider
         const providerConfig = llmConfig.providers.find(p => p.id === providerIdToUse);
         if (!providerConfig) {
             throw new Error(`Configuration for primary provider '${providerIdToUse}' not found.`);

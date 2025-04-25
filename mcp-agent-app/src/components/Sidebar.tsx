@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { MessageSquare, PanelLeftClose, PanelRightClose, BrainCircuit, Plus, Trash2, Loader2, RefreshCw, Save } from 'lucide-react'; // Added Save icon
+import { MessageSquare, PanelLeftClose, BrainCircuit, Plus, Trash2, Loader2, RefreshCw, Save } from 'lucide-react'; // Added Save icon
 import { useChat, ChatMetadata, LlmProvider, LlmModel } from '@/context/ChatContext'; // Import LLM types
 
 const Sidebar: React.FC = () => {
@@ -137,7 +137,7 @@ const Sidebar: React.FC = () => {
                     className="p-2 rounded-md text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 focus:outline-none"
                     aria-label={hasMounted && isExpanded ? "Collapse sidebar" : "Expand sidebar"}
                 >
-                    {hasMounted && isExpanded ? <PanelLeftClose className="w-6 h-6" /> : <PanelRightClose className="w-6 h-6" />}
+                    {hasMounted && isExpanded ? <PanelLeftClose className="w-6 h-6" /> : <BrainCircuit className="w-6 h-6" />}
                 </button>
             </div>
 
