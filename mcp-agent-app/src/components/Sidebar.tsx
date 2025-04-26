@@ -1,8 +1,9 @@
 "use client"; // Required for useState
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react'; // Import useRef
 import Link from 'next/link';
-import { MessageSquare, PanelLeftClose, PanelRightClose, BrainCircuit, Plus, Trash2, Loader2, RefreshCw, Save } from 'lucide-react'; // Added Save icon
+// Added Pencil icon
+import { MessageSquare, PanelLeftClose, BrainCircuit, Plus, Trash2, Loader2, RefreshCw, Save, Pencil } from 'lucide-react';
 import { useChat, ChatMetadata, LlmProvider, LlmModel } from '@/context/ChatContext'; // Import LLM types
 
 const Sidebar: React.FC = () => {
@@ -18,6 +19,9 @@ const Sidebar: React.FC = () => {
     const [isLoading, setIsLoading] = useState(false); // Loading history list
     const [isSaving, setIsSaving] = useState(false); // Saving state for button
     const [error, setError] = useState<string | null>(null);
+    const [editingChatId, setEditingChatId] = useState<string | null>(null); // State for which chat is being edited
+    const [editValue, setEditValue] = useState<string>(''); // State for the input field value during edit
+    const editInputRef = useRef<HTMLInputElement | null>(null); // Ref for the edit input
 
     // Find the currently selected provider's config
     const selectedProvider = llmConfig.providers.find(p => p.id === currentProviderId);
@@ -116,6 +120,64 @@ const Sidebar: React.FC = () => {
         }
     };
 
+    // --- Title Editing Handlers ---
+    const handleEditClick = (chat: ChatMetadata, event: React.MouseEvent) => {
+        event.stopPropagation(); // Prevent chat loading
+        setEditingChatId(chat.id);
+        setEditValue(chat.title);
+        // Focus the input shortly after it renders
+        setTimeout(() => editInputRef.current?.focus(), 0);
+    };
+
+    const handleTitleUpdate = async () => {
+        if (!editingChatId || !editValue.trim() || savedChats.find(c => c.id === editingChatId)?.title === editValue.trim()) {
+            // No change or empty title, just cancel edit
+            setEditingChatId(null);
+            return;
+        }
+
+        const originalTitle = savedChats.find(c => c.id === editingChatId)?.title;
+        const chatIdToUpdate = editingChatId;
+        const newTitle = editValue.trim();
+
+        // Optimistically update UI
+        setSavedChats(prev => prev.map(c => c.id === chatIdToUpdate ? { ...c, title: newTitle } : c));
+        setEditingChatId(null); // Exit edit mode immediately
+
+        try {
+            const response = await fetch(`/api/chats/${chatIdToUpdate}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: newTitle }), // Only send the title
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.message || `Failed to update title: ${response.statusText}`);
+            }
+            // No need to refresh list if optimistic update worked, but could triggerListRefresh() if needed
+            console.log(`[Sidebar] Updated title for chat ${chatIdToUpdate}`);
+
+        } catch (err: any) {
+            console.error("[Sidebar] Error updating chat title:", err);
+            setError(err.message || "Failed to update title");
+            // Revert optimistic update on error
+            if (originalTitle) {
+                setSavedChats(prev => prev.map(c => c.id === chatIdToUpdate ? { ...c, title: originalTitle } : c));
+            }
+        }
+    };
+
+    const handleEditKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+        if (event.key === 'Enter') {
+            handleTitleUpdate();
+        } else if (event.key === 'Escape') {
+            setEditingChatId(null); // Cancel edit
+        }
+    };
+    // --- End Title Editing Handlers ---
+
+
     // Handler for clicking a chat item
     const handleLoadClick = (chatId: string) => {
         loadChat(chatId);
@@ -128,7 +190,7 @@ const Sidebar: React.FC = () => {
                 {hasMounted && isExpanded && (
                     <div className="flex items-center space-x-2">
                         <BrainCircuit className="w-6 h-6 text-gray-800 dark:text-gray-200" />
-                        <span className="font-semibold text-lg text-gray-800 dark:text-gray-200">MCP Agent</span>
+                        <span className="font-semibold text-lg text-gray-800 dark:text-gray-200">bAI MCP</span>
                     </div>
                 )}
                 {(!hasMounted || !isExpanded) && <div className="w-6 h-6"></div>}
@@ -137,7 +199,7 @@ const Sidebar: React.FC = () => {
                     className="p-2 rounded-md text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 focus:outline-none"
                     aria-label={hasMounted && isExpanded ? "Collapse sidebar" : "Expand sidebar"}
                 >
-                    {hasMounted && isExpanded ? <PanelLeftClose className="w-6 h-6" /> : <PanelRightClose className="w-6 h-6" />}
+                    {hasMounted && isExpanded ? <PanelLeftClose className="w-6 h-6" /> : <BrainCircuit className="w-6 h-6" />}
                 </button>
             </div>
 
@@ -236,15 +298,37 @@ const Sidebar: React.FC = () => {
                         >
                             <MessageSquare className="w-5 h-5 flex-shrink-0" />
                             {hasMounted && isExpanded && (
-                                <span className="font-medium truncate flex-grow mr-2">{chat.title}</span>
+                                editingChatId === chat.id ? (
+                                    // Render input when editing
+                                    <input
+                                        ref={editInputRef}
+                                        type="text"
+                                        value={editValue}
+                                        onChange={(e) => setEditValue(e.target.value)}
+                                        onKeyDown={handleEditKeyDown}
+                                        onBlur={handleTitleUpdate} // Save on blur
+                                        className="flex-grow mr-2 px-1 py-0.5 text-sm bg-white dark:bg-gray-600 border border-blue-500 rounded focus:outline-none"
+                                        onClick={(e) => e.stopPropagation()} // Prevent chat loading when clicking input
+                                    />
+                                ) : (
+                                    // Render title span when not editing
+                                    <span className="font-medium truncate flex-grow mr-2">{chat.title}</span>
+                                )
                             )}
-                            {/* Restore Trash icon */}
-                            {hasMounted && isExpanded && (
-                                <Trash2
-                                    className="w-4 h-4 text-gray-400 dark:text-gray-500 opacity-0 group-hover:opacity-100 hover:text-red-600 dark:hover:text-red-400 flex-shrink-0"
-                                    onClick={(e) => handleDeleteChat(chat.id, e)}
-                                    aria-label="Delete chat"
-                                />
+                            {/* Action Icons (Edit and Delete) */}
+                            {hasMounted && isExpanded && editingChatId !== chat.id && ( // Show only when not editing this item
+                                <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 flex-shrink-0">
+                                    <Pencil
+                                        className="w-4 h-4 text-gray-400 dark:text-gray-500 hover:text-blue-600 dark:hover:text-blue-400"
+                                        onClick={(e) => handleEditClick(chat, e)}
+                                        aria-label="Edit title"
+                                    />
+                                    <Trash2
+                                        className="w-4 h-4 text-gray-400 dark:text-gray-500 hover:text-red-600 dark:hover:text-red-400"
+                                        onClick={(e) => handleDeleteChat(chat.id, e)}
+                                        aria-label="Delete chat"
+                                    />
+                                </div>
                             )}
                         </button>
                     ))}
@@ -266,8 +350,9 @@ const Sidebar: React.FC = () => {
                         title={currentChatId ? "Update Saved Chat" : "Save New Chat"}
                     >
                         <Save className={`w-4 h-4 ${hasMounted && isExpanded ? 'mr-2' : ''}`} />
+                        {/* Only show text when expanded */}
                         {hasMounted && isExpanded && <span>{isSaving ? 'Saving...' : (currentChatId ? 'Update Chat' : 'Save Chat')}</span>}
-                        {!isExpanded && <span>{isSaving ? '...' : (currentChatId ? 'U' : 'S')}</span>}
+                        {/* Removed the span that showed 'U' or 'S' when collapsed */}
                     </button>
                 )}
                 {hasMounted && isExpanded && <span className="block text-center text-xs text-gray-500">History stored via backend.</span>}

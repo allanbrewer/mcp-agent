@@ -52,3 +52,8 @@ prisma/*.db-journal
 prisma/.env
 prisma/.env.*
 src/generated/prisma/
+
+memory.json
+
+# System Prompt
+src/app/api/chat/lib/system-prompt.ts

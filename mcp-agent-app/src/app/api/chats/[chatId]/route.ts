@@ -10,7 +10,7 @@ interface RouteParams {
 export async function GET(request: NextRequest, context: { params: RouteParams }) {
     // console.log("[API GET /api/chats/[chatId]] Context received:", JSON.stringify(context, null, 2)); // Removed log
     try {
-        // Await the params object as per Next.js 15 documentation
+        // Revert to using await context.params
         const { chatId } = await context.params;
 
         if (!chatId) {
@@ -39,10 +39,11 @@ export async function GET(request: NextRequest, context: { params: RouteParams }
 }
 
 // DELETE /api/chats/{chatId} - Delete a specific chat
+// Correct the type for the second argument
 export async function DELETE(request: NextRequest, context: { params: RouteParams }) {
     // console.log("[API DELETE /api/chats/[chatId]] Context received:", JSON.stringify(context, null, 2)); // Removed log
     try {
-        // Await the params object as per Next.js 15 documentation
+        // Revert to using await context.params
         const { chatId } = await context.params;
 
         if (!chatId) {
@@ -75,10 +76,11 @@ export async function DELETE(request: NextRequest, context: { params: RouteParam
 }
 
 // PUT /api/chats/{chatId} - Update an existing chat
+// Correct the type for the second argument
 export async function PUT(request: NextRequest, context: { params: RouteParams }) {
     // console.log("[API PUT /api/chats/[chatId]] Context received:", JSON.stringify(context, null, 2)); // Removed log
     try {
-        // Await the params object as per Next.js 15 documentation
+        // Revert to using await context.params
         const { chatId } = await context.params;
 
         if (!chatId) {
@@ -90,20 +92,29 @@ export async function PUT(request: NextRequest, context: { params: RouteParams }
         const body = await request.json();
         // console.log(`[API PUT /api/chats/[chatId]] Received body for ID ${chatId}:`, JSON.stringify(body, null, 2)); // Removed log
 
-        if (!body.history || !Array.isArray(body.history)) {
-            console.error(`[API PUT /api/chats/[chatId]] Missing history for ID: ${chatId}`); // Keep error log
-            return NextResponse.json({ message: "Missing required field: history" }, { status: 400 });
+        // Allow updating title OR history, etc. Check for at least one field.
+        if (!body.title && !body.history && !body.systemPrompt && !body.providerId && !body.modelId) {
+            console.error(`[API PUT /api/chats/[chatId]] No update fields provided for ID: ${chatId}`);
+            return NextResponse.json({ message: "No update fields provided (e.g., title, history)" }, { status: 400 });
         }
+        // Validate history only if it's present
+        if (body.history && !Array.isArray(body.history)) {
+            console.error(`[API PUT /api/chats/[chatId]] Invalid history format for ID: ${chatId}`);
+            return NextResponse.json({ message: "Invalid format for field: history" }, { status: 400 });
+        }
+
+        // Construct data object conditionally
+        const dataToUpdate: any = {};
+        if (body.title !== undefined) dataToUpdate.title = body.title;
+        if (body.history !== undefined) dataToUpdate.history = body.history as any; // Keep 'as any' for JSON type
+        if (body.systemPrompt !== undefined) dataToUpdate.systemPrompt = body.systemPrompt;
+        if (body.providerId !== undefined) dataToUpdate.providerId = body.providerId;
+        if (body.modelId !== undefined) dataToUpdate.modelId = body.modelId;
+
 
         const updatedChat = await prisma.chat.update({
             where: { id: chatId },
-            data: {
-                title: body.title, // Update title if provided
-                history: body.history as any,
-                systemPrompt: body.systemPrompt,
-                providerId: body.providerId, // Update providerId if provided
-                modelId: body.modelId, // Update modelId if provided
-            },
+            data: dataToUpdate, // Use the conditionally constructed object
         });
         console.log(`[API PUT /api/chats/[chatId]] Updated chat: ${chatId}`);
         return NextResponse.json(updatedChat);
